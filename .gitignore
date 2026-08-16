@@ -1,0 +1,17 @@
+node_modules/
+dist/
+data/
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.tsbuildinfo
+coverage/
+
+# Emacs and Org-mode temporary files
+.\#*
+\#*#
+*~
+.org-id-locations
+*_archive
