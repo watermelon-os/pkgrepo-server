@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono, type Context } from "hono";
@@ -43,6 +44,9 @@ const createBodySchema = z.object({
   testUrl: z.string().url().optional(),
   buildUrl: z.string().url().optional(),
   repositories: z.array(z.string().min(1)).optional(),
+  // PRS-07: не ошибка при несовпадении имени — сервер размещает файл
+  // под фактическим именем/версией из метаданных (переименовывает сам).
+  resolveName: z.boolean().optional(),
 });
 
 const updateBodySchema = z.object({
@@ -53,10 +57,12 @@ const updateBodySchema = z.object({
 const versionBodySchema = z.object({
   version: versionSchema,
   file: z.string().optional(),
+  resolveName: z.boolean().optional(),
 });
 
 const versionUpdateBodySchema = z.object({
   file: z.string().optional(),
+  resolveName: z.boolean().optional(),
 });
 
 const repositoriesBodySchema = z.object({
@@ -69,8 +75,13 @@ const runBodySchema = z.object({
   version: versionSchema.optional(),
 });
 
-function sha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+function sha256(data: string | Uint8Array): string {
+  const buf = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data);
+  // Вес файла входит в хэш: одинаковое содержимое разной длины — разный хэш,
+  // а бинарные артефакты хэшируются по байтам, не по utf8-строке.
+  const weight = Buffer.allocUnsafe(8);
+  weight.writeBigUInt64LE(BigInt(buf.length));
+  return createHash("sha256").update(weight).update(buf).digest("hex");
 }
 
 /** Имя файла для размещения в репозитории по шаблону пакетной системы типа. */
@@ -97,8 +108,36 @@ function reposOf(
     .filter((r): r is NonNullable<typeof r> => r !== undefined);
 }
 
-/** Запись файла во временный файл + атомарный rename внутри каждого репозитория пакета. */
-async function writeArtifactToRepos(
+/** Ошибка разбора артефакта при размещении через API (в отличие от sync — ошибка, не лог). */
+class ArtifactError extends Error {
+  constructor(
+    public readonly code: string,
+    /** Фактическое имя/версия из метаданных file — возвращается клиенту как ожидаемое. */
+    public readonly derived?: ParsedArtifact,
+  ) {
+    super(code);
+  }
+}
+
+function isArtifactError(error: unknown): error is ArtifactError {
+  return error instanceof ArtifactError;
+}
+
+/** Ответ для ошибок размещения: код + фактические имя/версия из метаданных. */
+function artifactErrorResponse(c: Context, error: ArtifactError) {
+  return c.json(
+    error.derived
+      ? { error: error.code, name: error.derived.name, version: error.derived.version }
+      : { error: error.code },
+    400,
+  );
+}
+
+/**
+ * Запись файла в каждый репозиторий под заданным именем/версией
+ * (без разбора — используется для переразмещения уже известных файлов).
+ */
+async function writeFileToRepos(
   db: DatabaseClient,
   pkg: { repositories: string[] },
   name: string,
@@ -113,9 +152,46 @@ async function writeArtifactToRepos(
     await writeFile(tmp, content);
     await rename(tmp, target);
     if (adapter) {
-      await adapter.update(name, version);
+      await adapter.update(repo.path, repo.type, name, version);
     }
   }
+}
+
+/**
+ * Размещение артефакта через API: контент записывается во временный файл,
+ * имя и версия определяются той же цепочкой утилит, что и в синке (фолбэк —
+ * только проверка шаблона составленного имени, не слепое согласие с телом).
+ */
+async function writeArtifactToRepos(
+  db: DatabaseClient,
+  pkg: { repositories: string[] },
+  name: string,
+  version: string,
+  content: string,
+  adapter: RepoAdapter,
+  resolveName = false,
+): Promise<ParsedArtifact> {
+  const repo = reposOf(db, pkg)[0];
+  if (!repo) throw new ArtifactError("no_repositories");
+  // Временный файл называется артефактным именем — для разбора той же цепочкой
+  // (фолбэк-парсер работает по базовому имени); уникальность — через директорию.
+  const probeDir = join(tmpdir(), `.wm-probe-${process.pid}-${Date.now()}`);
+  await mkdir(probeDir, { recursive: true });
+  const probe = join(probeDir, artifactFileName(name, version, repo.type));
+  await writeFile(probe, content);
+  let parsed: ParsedArtifact | undefined;
+  try {
+    parsed = await adapter.inspect(repo.type, probe);
+  } finally {
+    await rm(probeDir, { recursive: true, force: true });
+  }
+  // resolveName: сервер переименовывает файл под фактическое имя/версию (PRS-07).
+  if (!parsed) throw new ArtifactError("artifact_unparseable");
+  if (parsed.name !== name && !resolveName) {
+    throw new ArtifactError("artifact_name_mismatch", parsed);
+  }
+  await writeFileToRepos(db, pkg, parsed.name, parsed.version, content, adapter);
+  return parsed;
 }
 
 async function removeArtifactFromRepos(
@@ -298,9 +374,9 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           .get();
         if (existing) continue; // идемпотентность
         const target = join(repo.path, artifactFileName(name, version, repo.type));
-        let content = "";
+        let content: Buffer;
         try {
-          content = await import("node:fs/promises").then((m) => m.readFile(target, "utf8"));
+          content = await import("node:fs/promises").then((m) => m.readFile(target));
         } catch {
           logger.warn("sync: cannot read artifact", { req_id: reqId, repo: repo.name, file });
           continue;
@@ -313,7 +389,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
             createdAt: new Date(),
           })
           .run();
-        if (adapter) await adapter.update(name, version);
+        if (adapter) await adapter.update(repo.path, repo.type, name, version);
         picked += 1;
         logger.info("sync: picked artifact", { req_id: reqId, name, version, repo: repo.name });
       }
@@ -396,33 +472,71 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       })
       .run();
 
-    if (body.version !== undefined) {
-      const pkg = db.select().from(packages).where(eq(packages.name, body.name)).get()!;
-      if (body.file !== undefined) {
-        // Атомарность: сначала фс, потом бд; при сбое бд — компенсация.
-        await writeArtifactToRepos(db, pkg, body.name, body.version, body.file, adapter);
+    const pkg = db.select().from(packages).where(eq(packages.name, body.name)).get()!;
+    let effectivePkg: typeof pkg = pkg;
+    if (body.file !== undefined) {
+      // Атомарность: сначала фс, потом бд; при сбое бд — компенсация.
+      let derived: ParsedArtifact;
+      try {
+        derived = await writeArtifactToRepos(
+          db,
+          pkg,
+          body.name,
+          body.version ?? "",
+          body.file,
+          adapter,
+          body.resolveName === true,
+        );
+      } catch (error) {
+        if (isArtifactError(error)) return artifactErrorResponse(c, error);
+        throw error;
+      }
+      // PRS-07 resolveName: файл размещён под фактическим именем — версия
+      // привязывается к фактическому пакету (заявленный-фантом удаляется).
+      if (derived.name !== body.name) {
+        db.delete(packages).where(eq(packages.name, body.name)).run();
+        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
+        if (!real) {
+          db.insert(packages)
+            .values({
+              name: derived.name,
+              testUrl: null,
+              buildUrl: null,
+              repositories: body.repositories ?? [],
+              createdAt: now,
+            })
+            .run();
+          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
+        }
+        effectivePkg = real;
       }
       try {
         db.insert(versions)
           .values({
-            packageName: body.name,
-            version: body.version,
-            sha256: body.file !== undefined ? sha256(body.file) : "",
+            packageName: derived.name,
+            version: derived.version,
+            sha256: sha256(body.file),
             createdAt: now,
           })
           .run();
       } catch (error) {
         // ATOM-01: компенсация — удалить записанное в фс.
-        if (body.file !== undefined) {
-          await removeArtifactFromRepos(db, pkg, body.name, body.version);
-        }
+        await removeArtifactFromRepos(db, pkg, derived.name, derived.version);
         throw error;
       }
+    } else if (body.version !== undefined) {
+      db.insert(versions)
+        .values({
+          packageName: body.name,
+          version: body.version,
+          sha256: "",
+          createdAt: now,
+        })
+        .run();
     }
 
     logger.info("package created", { req_id: reqId, name: body.name });
-    const pkg = db.select().from(packages).where(eq(packages.name, body.name)).get();
-    return c.json(buildPackageResponse(deps, pkg!), 201);
+    return c.json(buildPackageResponse(deps, effectivePkg), 201);
   });
 
   // ADD-03. Добавление версии.
@@ -450,16 +564,69 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
 
     const now = new Date();
     if (body.file !== undefined) {
-      await writeArtifactToRepos(db, pkg, name, body.version, body.file, adapter);
+      let derived: ParsedArtifact;
+      try {
+        derived = await writeArtifactToRepos(
+          db,
+          pkg,
+          name,
+          body.version,
+          body.file,
+          adapter,
+          body.resolveName === true,
+        );
+      } catch (error) {
+        if (isArtifactError(error)) return artifactErrorResponse(c, error);
+        throw error;
+      }
+      // PRS-07 resolveName: файл размещён под фактическим именем —
+      // версия привязывается к фактическому пакету (создаётся при необходимости).
+      let versionPkg = pkg;
+      if (derived.name !== name) {
+        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
+        if (!real) {
+          db.insert(packages)
+            .values({
+              name: derived.name,
+              testUrl: null,
+              buildUrl: null,
+              repositories: [],
+              createdAt: now,
+            })
+            .run();
+          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
+        }
+        versionPkg = real;
+      }
+      // ADD-03: дубль проверяется по фактической версии файла.
+      const dupDerived = db
+        .select()
+        .from(versions)
+        .where(and(eq(versions.packageName, derived.name), eq(versions.version, derived.version)))
+        .get();
+      if (dupDerived) {
+        await removeArtifactFromRepos(db, pkg, derived.name, derived.version);
+        return c.json({ error: "version_exists" }, 409);
+      }
+      db.insert(versions)
+        .values({
+          packageName: derived.name,
+          version: derived.version,
+          sha256: sha256(body.file),
+          createdAt: now,
+        })
+        .run();
+      return c.json(buildPackageResponse(deps, versionPkg), 201);
+    } else {
+      db.insert(versions)
+        .values({
+          packageName: name,
+          version: body.version,
+          sha256: "",
+          createdAt: now,
+        })
+        .run();
     }
-    db.insert(versions)
-      .values({
-        packageName: name,
-        version: body.version,
-        sha256: body.file !== undefined ? sha256(body.file) : "",
-        createdAt: now,
-      })
-      .run();
     return c.json(buildPackageResponse(deps, pkg), 201);
   });
 
@@ -537,7 +704,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           return undefined;
         })();
         if (content === undefined) continue;
-        await writeArtifactToRepos(db, fresh, name, row.version, content);
+        await writeFileToRepos(db, fresh, name, row.version, content, adapter);
       } catch {
         // не блокирует размещение
       }
@@ -631,7 +798,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         })
         .run();
       if (body.file !== undefined) {
-        await writeArtifactToRepos(db, pkg, name, version, body.file, adapter);
+        await writeFileToRepos(db, pkg, name, version, body.file, adapter);
       }
       return c.json(buildPackageResponse(deps, pkg));
     }
@@ -647,12 +814,105 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       return c.json({ error: "no_changes" }, 409);
     }
     // UPD-01: перезапись при разной хэшсумме — варнинг.
-    await writeArtifactToRepos(db, pkg, name, version, body.file, adapter);
+    let derived: ParsedArtifact;
+    try {
+      derived = await writeArtifactToRepos(
+        db,
+        pkg,
+        name,
+        version,
+        body.file,
+        adapter,
+        body.resolveName === true,
+      );
+    } catch (error) {
+      if (isArtifactError(error)) return artifactErrorResponse(c, error);
+      throw error;
+    }
+    if (derived.version !== version) {
+      // PRS-07: версия файла не соответствует перезаписываемой. Без resolveName —
+      // ошибка с фактической (ожидаемой) версией; с resolveName — файл переименован
+      // сервером под фактическое имя/версию, запись переводится на них.
+      if (body.resolveName !== true) {
+        return artifactErrorResponse(
+          c,
+          new ArtifactError("artifact_version_mismatch", derived),
+        );
+      }
+      let versionPkg = pkg;
+      if (derived.name !== name) {
+        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
+        if (!real) {
+          db.insert(packages)
+            .values({
+              name: derived.name,
+              testUrl: null,
+              buildUrl: null,
+              repositories: [],
+              createdAt: new Date(),
+            })
+            .run();
+          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
+        }
+        versionPkg = real;
+      }
+      const dup = db
+        .select()
+        .from(versions)
+        .where(and(eq(versions.packageName, derived.name), eq(versions.version, derived.version)))
+        .get();
+      if (dup) {
+        await removeArtifactFromRepos(db, pkg, derived.name, derived.version);
+        return c.json({ error: "version_exists" }, 409);
+      }
+      db.delete(versions)
+        .where(and(eq(versions.packageName, name), eq(versions.version, version)))
+        .run();
+      db.insert(versions)
+        .values({
+          packageName: derived.name,
+          version: derived.version,
+          sha256: newHash,
+          createdAt: row.createdAt,
+        })
+        .run();
+      return c.json({ warning: true, name: derived.name, version: derived.version });
+    }
     db.update(versions)
       .set({ sha256: newHash })
       .where(and(eq(versions.packageName, name), eq(versions.version, version)))
       .run();
     return c.json({ warning: true });
+  });
+
+  // DEL версии: удаляется файл/ссылки из репозиториев, запись версии и журналы этой версии.
+  app.delete("/:name/versions/:version", async (c) => {
+    const name = c.req.param("name");
+    const version = c.req.param("version");
+    if (!nameSchema.safeParse(name).success || !versionSchema.safeParse(version).success) {
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    if (!pkg) return c.json({ error: "not_found" }, 404);
+    const row = db
+      .select()
+      .from(versions)
+      .where(and(eq(versions.packageName, name), eq(versions.version, version)))
+      .get();
+    if (!row) return c.json({ error: "not_found" }, 404);
+
+    // Атомарность: сначала фс (удаление файлов/ссылок), затем бд.
+    await removeArtifactFromRepos(db, pkg, name, version);
+    db.delete(versions)
+      .where(and(eq(versions.packageName, name), eq(versions.version, version)))
+      .run();
+    db.delete(testJournal)
+      .where(and(eq(testJournal.packageName, name), eq(testJournal.version, version)))
+      .run();
+    db.delete(buildJournal)
+      .where(and(eq(buildJournal.packageName, name), eq(buildJournal.version, version)))
+      .run();
+    return c.body(null, 204);
   });
 
   // TST-01: фантом нельзя тестировать.

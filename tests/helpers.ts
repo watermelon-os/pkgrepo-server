@@ -49,7 +49,7 @@ export function memoryLogger(level: LogLevel = "debug"): { logger: Logger; lines
     stream: { write: (line) => lines.push(line) },
   });
   // у child() общий stream — строки попадают в lines
-  void logger.child({});
+  void logger.ch  ild({});
   void ({} as LogFields);
   return { logger, lines };
 }

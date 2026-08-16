@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
@@ -185,6 +185,24 @@ describe("createRepoAdapter", () => {
     const adapter = createRepoAdapter({ useUtilities: false });
     const got = await adapter.inspect("rpm", "/tmp/nginx-1.24.0-1.el9.x86_64.rpm");
     expect(got).toEqual({ name: "nginx", version: "1.24.0-1.el9.x86_64" });
-    await expect(adapter.update("nginx", "1.24.0-1.el9.x86_64")).resolves.toBeUndefined();
+    await expect(adapter.update("/tmp", "rpm", "nginx", "1.24.0-1.el9.x86_64")).resolves.toBeUndefined();
+  });
+
+  it("генерирует Packages для deb через dpkg-scanpackages", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wm-debgen-"));
+    const adapter = createRepoAdapter({ useUtilities: false });
+    await adapter.update(dir, "deb", "whatever", "1.0.0-1_amd64");
+    expect(existsSync(join(dir, "Packages"))).toBe(true);
+  });
+
+  it("предупреждает и пропускает генератор, которого нет в системе", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wm-rpmgen-"));
+    const warnings: unknown[] = [];
+    const adapter = createRepoAdapter({
+      useUtilities: false,
+      logger: { warn: (m: string, d?: unknown) => warnings.push([m, d]) } as never,
+    });
+    await adapter.update(dir, "rpm", "nginx", "1.24.0-1.el9.x86_64");
+    expect(warnings.length).toBeGreaterThan(0);
   });
 });

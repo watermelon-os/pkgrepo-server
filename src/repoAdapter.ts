@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   artifactFileName,
@@ -29,7 +30,7 @@ export interface RepoAdapterOptions {
 export interface RepoAdapter {
   isInitialized?: (dir: string, type: string) => boolean;
   inspect: (type: string, filePath: string) => Promise<ParsedArtifact | undefined>;
-  update: (name: string, version?: string) => void | Promise<void>;
+  update: (dir: string, type: string, name: string, version?: string) => void | Promise<void>;
 }
 
 /** Бинарники инструментов находятся через PATH (`/usr/bin/env`). */
@@ -228,14 +229,98 @@ export function isRepoInitialized(dir: string, type: string): boolean {
   }
 }
 
+/** Команды генерации бд репозитория по типу (в порядке попыток). */
+function generatorCommandsFor(
+  dir: string,
+  type: string,
+  name: string,
+  version: string | undefined,
+): Array<{ command: string[]; collect?: "Packages" }> {
+  switch (type) {
+    case "rpm":
+      return [{ command: ["createrepo_c", dir] }, { command: ["createrepo", dir] }];
+    case "deb":
+      // dpkg-scanpackages печатает индекс в stdout — пишем его в Packages.
+      return [{ command: ["dpkg-scanpackages", dir, "/dev/null"], collect: "Packages" }];
+    case "pacman": {
+      // repo-add требует путь к базе репо; имя базы неизвестно адаптеру —
+      // берём существующий `*.db.tar.gz` в директории репозитория.
+      const db = findPacmanDb(dir);
+      if (!db) return [];
+      const pkgFile = version
+        ? join(dir, artifactFileName(name, version, defaultArtifactTemplates[type] ?? defaultArtifactTemplates.rpm!))
+        : undefined;
+      return [
+        {
+          command: pkgFile
+            ? ["repo-add", join(dir, db), pkgFile]
+            : ["repo-add", join(dir, db)],
+        },
+      ];
+    }
+    default:
+      return [];
+  }
+}
+
+function findPacmanDb(dir: string): string | undefined {
+  try {
+    for (const entry of readdirSync(dir)) {
+      if (entry.endsWith(".db.tar.gz")) return entry;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Запуск генератора бд репозитория; отсутствующая утилита — варнинг и следующая попытка. */
+async function updateRepoDb(
+  dir: string,
+  type: string,
+  name: string,
+  version: string | undefined,
+  options: RepoAdapterOptions,
+): Promise<void> {
+  const commands = generatorCommandsFor(dir, type, name, version);
+  if (commands.length === 0) {
+    options.logger?.warn("repo update: no generator for repository", { dir, type, name });
+    return;
+  }
+  const exec = options.exec ?? defaultExec;
+  let warned = false;
+  for (const { command, collect } of commands) {
+    const [tool, ...args] = command;
+    let result: ExecResult;
+    try {
+      result = await exec(tool!, args ?? []);
+    } catch (error) {
+      if (!warned) {
+        warned = true;
+        options.logger?.warn("repo update: generator unavailable", {
+          type,
+          tool,
+          dir,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      continue;
+    }
+    if (result.code !== 0) continue;
+    if (collect === "Packages") {
+      await writeFile(join(dir, "Packages"), result.stdout);
+    }
+    options.logger?.debug("repo update done", { type, tool, dir, name, version });
+    return;
+  }
+  options.logger?.warn("repo update: no generator succeeded", { type, dir, name });
+}
+
 export function createRepoAdapter(options: RepoAdapterOptions): RepoAdapter {
   return {
     isInitialized: isRepoInitialized,
     inspect: (type, filePath) => inspectPackage(type, filePath, options),
-    update: async (name, version) => {
-      // Обновление бд репозитория специфичной командой — вне этого шага (см. очередь).
-      options.logger?.debug("repository update", { name, version });
-    },
+    update: (dir, type, name, version) => updateRepoDb(dir, type, name, version, options),
   };
 }
 

@@ -49,12 +49,12 @@ describe("packages API", () => {
     await createRepo(app);
     const res = await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "artifact" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "artifact" },
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
     expect(body.name).toBe("nginx");
-    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0"]);
+    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64"]);
   });
 
   // ADD-03 — повторное добавление той же версии — ошибка
@@ -109,9 +109,9 @@ describe("packages API", () => {
     await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "old" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "old" },
     });
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: { file: "new" },
     });
@@ -126,9 +126,9 @@ describe("packages API", () => {
     await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "same" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "same" },
     });
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: { file: "same" },
     });
@@ -139,12 +139,12 @@ describe("packages API", () => {
   it("находит файл в репозитории при ленивом обновлении индекса", async () => {
     const { app } = makeApp();
     const path = await createRepo(app);
-    writeFileSync(join(path, "nginx-1.0.0.rpm"), "artifact");
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0", { method: "PUT", body: {} });
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "artifact");
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", { method: "PUT", body: {} });
     expect(res.status).toBe(200);
     const got = await json(app, "/api/packages/nginx");
     const body = (await got.json()) as { versions: Array<{ version: string }> };
-    expect(body.versions.map((v) => v.version)).toContain("1.0.0");
+    expect(body.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
   });
 
   it("ошибка при ленивом обновлении, если файл не найден", async () => {
@@ -173,7 +173,7 @@ describe("packages API", () => {
   it("удаляет записанный файл при сбое записи в бд", async () => {
     const repoPath = mkdtempSync(join(tmpdir(), "wm-test-"));
     mkdirSync(join(repoPath, "repodata"), { recursive: true });
-    const artifact = join(repoPath, "nginx-1.0.0.rpm");
+    const artifact = join(repoPath, "nginx-1.0.0-1.x86_64.rpm");
 
     const sqlite = new Database(":memory:");
     const db = drizzle(sqlite, { schema });
@@ -206,7 +206,7 @@ describe("packages API", () => {
     });
     const res = await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "content" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
     });
     expect(res.status).toBe(500);
     expect(existsSync(artifact)).toBe(false);
@@ -218,12 +218,145 @@ describe("packages API", () => {
     const path = await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "artifact" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "artifact" },
     });
-    expect(existsSync(join(path, "nginx-1.0.0.rpm"))).toBe(true);
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
     const res = await json(app, "/api/packages/nginx", { method: "DELETE" });
     expect(res.status).toBe(204);
     expect((await json(app, "/api/packages/nginx")).status).toBe(404);
-    expect(existsSync(join(path, "nginx-1.0.0.rpm"))).toBe(false);
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
+  });
+
+  // Удаление версии: файл, запись версии и журналы этой версии.
+  it("удаляет версию и её файл из всех репозиториев", async () => {
+    const { app } = makeApp();
+    const path = await createRepo(app);
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "artifact" },
+    });
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", { method: "DELETE" });
+    expect(res.status).toBe(204);
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
+    const got = await json(app, "/api/packages/nginx");
+    const body = (await got.json()) as { versions: Array<{ version: string }> };
+    expect(body.versions.length).toBe(0);
+    expect((await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", { method: "DELETE" })).status).toBe(404);
+  });
+});
+
+// PRS-07: ошибка несовпадения имени возвращается с фактическими (ожидаемыми) значениями;
+// resolveName — сервер переименовывает файл под фактическое имя/версию.
+describe("PRS-07 resolveName", () => {
+  function renameRepo() {
+    const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
+    mkdirSync(join(dir, "repodata"), { recursive: true });
+    return dir;
+  }
+
+  it("возвращает фактическое имя/версию при несовпадении имени", async () => {
+    const path = renameRepo();
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "httpd", version: "2.4.62-1.el9.x86_64" }),
+        update: async () => {},
+      },
+    } as never);
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: "artifact_name_mismatch",
+      name: "httpd",
+      version: "2.4.62-1.el9.x86_64",
+    });
+  });
+
+  it("resolveName: размещает файл и запись под фактическим именем", async () => {
+    const path = renameRepo();
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "httpd", version: "2.4.62-1.el9.x86_64" }),
+        update: async () => {},
+      },
+    } as never);
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", repositories: ["a"], file: "content", resolveName: true },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
+    expect(body.name).toBe("httpd");
+    expect(body.versions.map((v) => v.version)).toEqual(["2.4.62-1.el9.x86_64"]);
+    expect(existsSync(join(path, "httpd-2.4.62-1.el9.x86_64.rpm"))).toBe(true);
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
+    expect((await json(app, "/api/packages/nginx")).status).toBe(404);
+  });
+
+  it("PUT без resolveName: mismatch версии возвращает фактическую версию", async () => {
+    const path = renameRepo();
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "nginx", version: "9.9.9-1.x86_64" }),
+        update: async () => {},
+      },
+    } as never);
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"] },
+    });
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
+      method: "PUT",
+      body: { file: "new" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: "artifact_version_mismatch",
+      version: "9.9.9-1.x86_64",
+    });
+  });
+
+  it("PUT с resolveName: переписывает запись под фактическую версию", async () => {
+    const path = renameRepo();
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "nginx", version: "9.9.9-1.x86_64" }),
+        update: async () => {},
+      },
+    } as never);
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"] },
+    });
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
+      method: "PUT",
+      body: { file: "new", resolveName: true },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ warning: true, version: "9.9.9-1.x86_64" });
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
+    expect(existsSync(join(path, "nginx-9.9.9-1.x86_64.rpm"))).toBe(true);
+    const got = await json(app, "/api/packages/nginx");
+    const body = (await got.json()) as { versions: Array<{ version: string }> };
+    expect(body.versions.map((v) => v.version)).toEqual(["9.9.9-1.x86_64"]);
   });
 });

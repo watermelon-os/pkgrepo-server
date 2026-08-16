@@ -115,7 +115,7 @@ describe("repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["main"], file: "content" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["main"], file: "content" },
     });
 
     const del = await json(app, "/api/repos/main", { method: "DELETE" });
@@ -183,11 +183,11 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a", "b"], file: "content" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a", "b"], file: "content" },
     });
 
-    expect(existsSync(join(pathA, "nginx-1.0.0.rpm"))).toBe(true);
-    expect(existsSync(join(pathB, "nginx-1.0.0.rpm"))).toBe(true);
+    expect(existsSync(join(pathA, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
+    expect(existsSync(join(pathB, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
   });
 
   // MOV-05. Обновление бд репозитория при добавлении/перезаписи файла
@@ -197,7 +197,8 @@ describe("placement between repositories", () => {
     const { app } = makeApp({
       fsRoot: "/tmp",
       repoAdapter: {
-        update: async (name: string) => {
+        inspect: async () => ({ name: "nginx", version: "1.0.0-1.x86_64" }),
+        update: async (_dir: string, _type: string, name: string) => {
           updates.push(name);
         },
       },
@@ -208,7 +209,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "content" },
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
     });
     expect(updates).toContain("nginx");
   });
