@@ -51,7 +51,7 @@ describe("building a package", () => {
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ buildStatus?: string }> }>;
     };
-    expect(body.packages[0].versions[0].buildStatus).toBe("ok");
+    expect(body.packages[0]!.versions[0]!.buildStatus).toBe("ok");
   });
 
   // BLD-04. Недействительность сборки
@@ -77,7 +77,7 @@ describe("building a package", () => {
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ buildStatus?: string | null }> }>;
     };
-    expect(body.packages[0].versions[0].buildStatus).not.toBe("ok");
+    expect(body.packages[0]!.versions[0]!.buildStatus).not.toBe("ok");
   });
 
   // BLD-05. Отдельные сущности сборки

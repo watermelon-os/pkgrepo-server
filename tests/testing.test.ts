@@ -30,7 +30,7 @@ describe("testing a package", () => {
     expect(journal.status).toBe(200);
     const body = (await journal.json()) as { entries: Array<{ id: string; status: string }> };
     expect(body.entries.length).toBeGreaterThanOrEqual(1);
-    expect(body.entries[0].status).toBe("running");
+    expect(body.entries[0]!.status).toBe("running");
   });
 
   // TST-03. Статус по последней валидной записи
@@ -58,7 +58,7 @@ describe("testing a package", () => {
         versions: Array<{ testStatus?: string }>;
       }>;
     };
-    expect(body.packages[0].versions[0].testStatus).toBe("ok");
+    expect(body.packages[0]!.versions[0]!.testStatus).toBe("ok");
   });
 
   // TST-04. Недействительная запись игнорируется
@@ -87,7 +87,7 @@ describe("testing a package", () => {
     const body = (await res.json()) as {
       packages: Array<{ versions: Array<{ testStatus?: string | null }> }>;
     };
-    expect(body.packages[0].versions[0].testStatus).not.toBe("ok");
+    expect(body.packages[0]!.versions[0]!.testStatus).not.toBe("ok");
   });
 
   // TST-05. Сбой запуска процесса
@@ -108,7 +108,7 @@ describe("testing a package", () => {
 
     const journal = await json(app, "/api/packages/nginx/versions/1.0.0/test/log");
     const body = (await journal.json()) as { entries: Array<{ status: string }> };
-    expect(body.entries[0].status).toBe("error");
+    expect(body.entries[0]!.status).toBe("error");
   });
 
   // TST-06. url теста не задан

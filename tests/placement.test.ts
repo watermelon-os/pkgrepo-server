@@ -84,6 +84,6 @@ describe("placement between repositories", () => {
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ buildStatus?: string }> }>;
     };
-    expect(body.packages[0].versions[0].buildStatus).toBe("ok");
+    expect(body.packages[0]!.versions[0]!.buildStatus).toBe("ok");
   });
 });

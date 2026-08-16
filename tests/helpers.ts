@@ -18,10 +18,18 @@ export interface MakeAppOptions {
   orch?: unknown;
 }
 
-export function makeApp(options: MakeAppOptions = {}) {
+export interface TestContext {
+  app: ReturnType<typeof createApp>;
+  db: DatabaseClient;
+  sqlite: Database.Database;
+}
+
+export function makeApp(options: MakeAppOptions = {}): TestContext {
   const sqlite = new Database(":memory:");
   const db: DatabaseClient = options.db ?? drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: resolve(import.meta.dirname, "../drizzle") });
+  if (!options.db) {
+    migrate(db, { migrationsFolder: resolve(import.meta.dirname, "../drizzle") });
+  }
   const app = createApp({
     db,
     version: options.version ?? "0.0.0-test",

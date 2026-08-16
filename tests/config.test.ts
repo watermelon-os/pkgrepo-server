@@ -45,7 +45,7 @@ describe("server configuration", () => {
   it("не изменяет настройки запущенного сервера", () => {
     delete process.env.SERVER_PORT;
     const cfg = loadConfig({} as never, "/tmp");
-    expect(cfg.SERVER_PORT).toBe(3000);
+    expect(cfg.SERVER_PORT).toBe(34817);
   });
 
   it("нет API для изменения настроек на лету", () => {

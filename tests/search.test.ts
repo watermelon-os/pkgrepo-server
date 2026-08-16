@@ -45,16 +45,16 @@ describe("search API", () => {
       method: "POST",
       body: { name: "nginx", version: "1.0.0" },
     });
-    await json(app, "/api/packages", {
+    await json(app, "/api/packages/nginx/versions", {
       method: "POST",
-      body: { name: "nginx", version: "2.0.0" },
+      body: { version: "2.0.0" },
     });
 
     const res = await json(app, "/api/packages?name=nginx");
     const body = (await res.json()) as {
       packages: Array<{ name: string; versions: Array<{ version: string }> }>;
     };
-    expect(body.packages.filter((p) => p.name === "nginx")[0].versions.map((v) => v.version)).toEqual(
+    expect(body.packages.filter((p) => p.name === "nginx")[0]!.versions.map((v) => v.version)).toEqual(
       ["1.0.0", "2.0.0"],
     );
   });
@@ -101,9 +101,9 @@ describe("search API", () => {
         versions: Array<{ version: string; repositories: string[] }>;
       }>;
     };
-    const pkg = body.packages[0];
+    const pkg = body.packages[0]!;
     expect(pkg.name).toBe("nginx");
-    expect(pkg.versions[0].version).toBe("1.0.0");
-    expect(Array.isArray(pkg.versions[0].repositories)).toBe(true);
+    expect(pkg.versions[0]!.version).toBe("1.0.0");
+    expect(Array.isArray(pkg.versions[0]!.repositories)).toBe(true);
   });
 });
