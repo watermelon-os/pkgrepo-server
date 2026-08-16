@@ -1,399 +1,48 @@
-import { createHash } from "node:crypto";
-import { readdir } from "node:fs/promises";
-import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
+import type { OrchClient } from "../app.js";
+import { buildJournal, packages, repositories, testJournal, versions } from "../db/schema.js";
+import { createLogger } from "../logger.js";
+import type { PackageApiDeps } from "./packages/deps.js";
+import { resolveAdapter } from "./packages/deps.js";
 import {
-  artifactFileName as buildArtifactFileName,
-  defaultArtifactTemplates,
-} from "../artifacts.js";
-import { createRepoAdapter, type ParsedArtifact, type RepoAdapter } from "../repoAdapter.js";
-import type { OrchClient, Token } from "../app.js";
-import type { DatabaseClient } from "../db/index.js";
+  createBodySchema,
+  nameSchema,
+  repositoriesBodySchema,
+  runBodySchema,
+  updateBodySchema,
+  versionBodySchema,
+  versionSchema,
+  versionUpdateBodySchema,
+} from "./packages/schemas.js";
 import {
-  buildJournal,
-  packages,
-  repositories,
-  testJournal,
-  versions,
-} from "../db/schema.js";
-import { createLogger, type Logger } from "../logger.js";
+  artifactErrorResponse,
+  artifactExistsInRepos,
+  ArtifactError,
+  artifactFileName,
+  ensurePackage,
+  getPackage,
+  isArtifactError,
+  removeArtifactFromRepos,
+  repositoryByIdentity,
+  reposOf,
+  sha256,
+  writeArtifactToRepos,
+  writeFileToRepos,
+} from "./packages/artifacts.js";
+import { buildPackageResponse } from "./packages/response.js";
+import { startBuild, startTest } from "./packages/process.js";
+import { runSync } from "./packages/sync.js";
 
-export interface PackageApiDeps {
-  db: DatabaseClient;
-  fsRoot?: string;
-  commonTestUrl?: string;
-  commonBuildUrl?: string;
-  orch?: OrchClient;
-  logger?: Logger;
-  tokens?: Token[];
-  repoAdapter?: RepoAdapter;
-}
-
-const nameSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._+~-]+$/);
-const versionSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._+~-]+$/);
-
-const createBodySchema = z.object({
-  name: nameSchema,
-  version: versionSchema.optional(),
-  file: z.string().optional(),
-  testUrl: z.string().url().optional(),
-  buildUrl: z.string().url().optional(),
-  repositories: z.array(z.string().min(1)).optional(),
-  // PRS-07: не ошибка при несовпадении имени — сервер размещает файл
-  // под фактическим именем/версией из метаданных (переименовывает сам).
-  resolveName: z.boolean().optional(),
-});
-
-const updateBodySchema = z.object({
-  testUrl: z.string().url().optional(),
-  buildUrl: z.string().url().optional(),
-});
-
-const versionBodySchema = z.object({
-  version: versionSchema,
-  file: z.string().optional(),
-  resolveName: z.boolean().optional(),
-});
-
-const versionUpdateBodySchema = z.object({
-  file: z.string().optional(),
-  resolveName: z.boolean().optional(),
-});
-
-const repositoriesBodySchema = z.object({
-  repositories: z.array(z.string().min(1)).min(1),
-});
-
-const runBodySchema = z.object({
-  testUrl: z.string().url().optional(),
-  buildUrl: z.string().url().optional(),
-  version: versionSchema.optional(),
-});
-
-function sha256(data: string | Uint8Array): string {
-  const buf = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data);
-  // Вес файла входит в хэш: одинаковое содержимое разной длины — разный хэш,
-  // а бинарные артефакты хэшируются по байтам, не по utf8-строке.
-  const weight = Buffer.allocUnsafe(8);
-  weight.writeBigUInt64LE(BigInt(buf.length));
-  return createHash("sha256").update(weight).update(buf).digest("hex");
-}
-
-/** Имя файла для размещения в репозитории по шаблону пакетной системы типа. */
-function artifactFileName(name: string, version: string, type: string): string {
-  const template = defaultArtifactTemplates[type] ?? defaultArtifactTemplates.rpm!;
-  return buildArtifactFileName(name, version, template);
-}
+export { runSync, type PackageApiDeps };
 
 function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`.*${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}.*`);
-}
-
-function repositoryByIdentity(db: DatabaseClient, name: string) {
-  return db.select().from(repositories).where(eq(repositories.name, name)).get();
-}
-
-function reposOf(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-): Array<{ name: string; path: string; type: string }> {
-  return pkg.repositories
-    .map((name) => repositoryByIdentity(db, name))
-    .filter((r): r is NonNullable<typeof r> => r !== undefined);
-}
-
-/** Ошибка разбора артефакта при размещении через API (в отличие от sync — ошибка, не лог). */
-class ArtifactError extends Error {
-  constructor(
-    public readonly code: string,
-    /** Фактическое имя/версия из метаданных file — возвращается клиенту как ожидаемое. */
-    public readonly derived?: ParsedArtifact,
-  ) {
-    super(code);
-  }
-}
-
-function isArtifactError(error: unknown): error is ArtifactError {
-  return error instanceof ArtifactError;
-}
-
-/** Ответ для ошибок размещения: код + фактические имя/версия из метаданных. */
-function artifactErrorResponse(c: Context, error: ArtifactError) {
-  return c.json(
-    error.derived
-      ? { error: error.code, name: error.derived.name, version: error.derived.version }
-      : { error: error.code },
-    400,
-  );
-}
-
-/**
- * Запись файла в каждый репозиторий под заданным именем/версией
- * (без разбора — используется для переразмещения уже известных файлов).
- */
-async function writeFileToRepos(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-  name: string,
-  version: string,
-  content: string,
-  adapter?: RepoAdapter,
-): Promise<void> {
-  for (const repo of reposOf(db, pkg)) {
-    const target = join(repo.path, artifactFileName(name, version, repo.type));
-    await mkdir(repo.path, { recursive: true });
-    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, content);
-    await rename(tmp, target);
-    if (adapter) {
-      await adapter.update(repo.path, repo.type, name, version);
-    }
-  }
-}
-
-/**
- * Размещение артефакта через API: контент записывается во временный файл,
- * имя и версия определяются той же цепочкой утилит, что и в синке (фолбэк —
- * только проверка шаблона составленного имени, не слепое согласие с телом).
- */
-async function writeArtifactToRepos(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-  name: string,
-  version: string,
-  content: string,
-  adapter: RepoAdapter,
-  resolveName = false,
-): Promise<ParsedArtifact> {
-  const repo = reposOf(db, pkg)[0];
-  if (!repo) throw new ArtifactError("no_repositories");
-  // Временный файл называется артефактным именем — для разбора той же цепочкой
-  // (фолбэк-парсер работает по базовому имени); уникальность — через директорию.
-  const probeDir = join(tmpdir(), `.wm-probe-${process.pid}-${Date.now()}`);
-  await mkdir(probeDir, { recursive: true });
-  const probe = join(probeDir, artifactFileName(name, version, repo.type));
-  await writeFile(probe, content);
-  let parsed: ParsedArtifact | undefined;
-  try {
-    parsed = await adapter.inspect(repo.type, probe);
-  } finally {
-    await rm(probeDir, { recursive: true, force: true });
-  }
-  // resolveName: сервер переименовывает файл под фактическое имя/версию (PRS-07).
-  if (!parsed) throw new ArtifactError("artifact_unparseable");
-  if (parsed.name !== name && !resolveName) {
-    throw new ArtifactError("artifact_name_mismatch", parsed);
-  }
-  await writeFileToRepos(db, pkg, parsed.name, parsed.version, content, adapter);
-  return parsed;
-}
-
-async function removeArtifactFromRepos(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-  name: string,
-  version: string,
-): Promise<void> {
-  for (const repo of reposOf(db, pkg)) {
-    try {
-      await rm(join(repo.path, artifactFileName(name, version, repo.type)), { force: true });
-    } catch {
-      // File not present — nothing to remove.
-    }
-  }
-}
-
-/** Наличие файла в одном из репозиториев пакета (для ленивого индекса). */
-async function artifactExistsInRepos(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-  name: string,
-  version: string,
-): Promise<boolean> {
-  for (const repo of reposOf(db, pkg)) {
-    try {
-      await access(join(repo.path, artifactFileName(name, version, repo.type)), fsConstants.F_OK);
-      return true;
-    } catch {
-      // not in this repo
-    }
-  }
-  return false;
-}
-
-export interface VersionStatus {
-  version: string;
-  repositories: string[];
-  testStatus?: string;
-  buildStatus?: string;
-}
-
-function journalStatus(
-  db: DatabaseClient,
-  table: typeof testJournal | typeof buildJournal,
-  packageName: string,
-  version: string,
-): string | undefined {
-  const rows = db
-    .select()
-    .from(table)
-    .where(and(eq(table.packageName, packageName), eq(table.version, version)))
-    .all()
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i]!;
-    if (!row.invalid && (row.status === "ok" || row.status === "fail")) {
-      return row.status;
-    }
-  }
-  return undefined;
-}
-
-function buildStatusForVersion(
-  db: DatabaseClient,
-  packageName: string,
-  version: string,
-): string | undefined {
-  const rows = db
-    .select()
-    .from(buildJournal)
-    .where(eq(buildJournal.packageName, packageName))
-    .all()
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i]!;
-    if (row.invalid) continue;
-    if (row.resultVersion !== null && row.resultVersion !== version) continue;
-    if (row.resultVersion === null && row.version !== version) continue;
-    if (row.status === "ok" || row.status === "fail") {
-      return row.status;
-    }
-  }
-  return undefined;
-}
-
-interface PackageRow {
-  name: string;
-  testUrl: string | null;
-  buildUrl: string | null;
-  repositories: string[];
-}
-
-function buildPackageResponse(
-  deps: PackageApiDeps,
-  pkg: PackageRow,
-): {
-  name: string;
-  versions: VersionStatus[];
-  testUrl?: string;
-  buildUrl?: string;
-  repositories: string[];
-} {
-  const db = deps.db;
-  const versionRows = db
-    .select()
-    .from(versions)
-    .where(eq(versions.packageName, pkg.name))
-    .all()
-    .sort((a, b) => a.version.localeCompare(b.version));
-  const list: VersionStatus[] = versionRows.map((row) => ({
-    version: row.version,
-    repositories: pkg.repositories,
-    testStatus: journalStatus(db, testJournal, pkg.name, row.version),
-    buildStatus: buildStatusForVersion(db, pkg.name, row.version),
-  }));
-  return {
-    name: pkg.name,
-    versions: list,
-    ...(pkg.testUrl ? { testUrl: pkg.testUrl } : {}),
-    ...(pkg.buildUrl ? { buildUrl: pkg.buildUrl } : {}),
-    repositories: pkg.repositories,
-  };
-}
-
-/**
- * Сканирование репозиториев и подхват артефактов, появившихся на диске вне API (SVR-03).
- * Общая логика для ручного POST /sync и периодического таймера (index.ts).
- */
-export async function runSync(
-  deps: PackageApiDeps,
-  reqId = "",
-): Promise<{ ok: true; picked: number }> {
-  const db = deps.db;
-  const logger = deps.logger ?? createLogger({ level: "info" });
-  const adapter: RepoAdapter =
-    deps.repoAdapter ?? createRepoAdapter({ useUtilities: false, logger });
-  const repos = db.select().from(repositories).all();
-  let picked = 0;
-  for (const repo of repos) {
-    let files: string[] = [];
-    try {
-      files = await readdir(repo.path);
-    } catch {
-      logger.warn("sync: cannot read repository", { req_id: reqId, repo: repo.name });
-      continue;
-    }
-    for (const file of files) {
-      const parsed = await adapter.inspect(repo.type, join(repo.path, file));
-      if (!parsed) {
-        // неразбираемое имя файла — только логируется, ошибкой не становится
-        logger.warn("sync: cannot parse artifact", { req_id: reqId, repo: repo.name, file });
-        continue;
-      }
-      const { name, version } = parsed;
-      let pkg = db.select().from(packages).where(eq(packages.name, name)).get();
-      if (!pkg) {
-        db.insert(packages)
-          .values({
-            name,
-            testUrl: null,
-            buildUrl: null,
-            repositories: [repo.name],
-            createdAt: new Date(),
-          })
-          .run();
-        pkg = db.select().from(packages).where(eq(packages.name, name)).get()!;
-      } else if (!pkg.repositories.includes(repo.name)) {
-        db.update(packages)
-          .set({ repositories: [...pkg.repositories, repo.name] })
-          .where(eq(packages.name, name))
-          .run();
-      }
-      const existing = db
-        .select()
-        .from(versions)
-        .where(and(eq(versions.packageName, name), eq(versions.version, version)))
-        .get();
-      if (existing) continue; // идемпотентность
-      const target = join(repo.path, artifactFileName(name, version, repo.type));
-      let content: Buffer;
-      try {
-        content = await import("node:fs/promises").then((m) => m.readFile(target));
-      } catch {
-        logger.warn("sync: cannot read artifact", { req_id: reqId, repo: repo.name, file });
-        continue;
-      }
-      db.insert(versions)
-        .values({
-          packageName: name,
-          version,
-          sha256: sha256(content),
-          createdAt: new Date(),
-        })
-        .run();
-      await adapter.update(repo.path, repo.type, name, version);
-      picked += 1;
-      logger.info("sync: picked artifact", { req_id: reqId, name, version, repo: repo.name });
-    }
-  }
-  logger.info("sync done", { req_id: reqId, picked });
-  return { ok: true, picked };
 }
 
 export function packageRoutes(deps: PackageApiDeps): Hono {
@@ -401,9 +50,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   const logger = deps.logger ?? createLogger({ level: "info" });
   const orch: OrchClient =
     deps.orch ?? { start: async () => ({ ok: true, error: undefined, response: undefined }) };
-  // По умолчанию утилиты не используются — детерминированное поведение в тестах;
-  // продакшн передает адаптер из конфига (index.ts).
-  const adapter: RepoAdapter = deps.repoAdapter ?? createRepoAdapter({ useUtilities: false, logger });
+  const adapter = resolveAdapter(deps, logger);
 
   const app = new Hono();
 
@@ -459,7 +106,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const existing = db.select().from(packages).where(eq(packages.name, body.name)).get();
+    const existing = getPackage(db, body.name);
     if (existing) {
       // ADD-04: фантом при существующем пакете — ошибка.
       return c.json({ error: "package_exists" }, 409);
@@ -487,11 +134,11 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       })
       .run();
 
-    const pkg = db.select().from(packages).where(eq(packages.name, body.name)).get()!;
+    const pkg = getPackage(db, body.name)!;
     let effectivePkg: typeof pkg = pkg;
     if (body.file !== undefined) {
       // Атомарность: сначала фс, потом бд; при сбое бд — компенсация.
-      let derived: ParsedArtifact;
+      let derived;
       try {
         derived = await writeArtifactToRepos(
           db,
@@ -510,20 +157,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       // привязывается к фактическому пакету (заявленный-фантом удаляется).
       if (derived.name !== body.name) {
         db.delete(packages).where(eq(packages.name, body.name)).run();
-        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
-        if (!real) {
-          db.insert(packages)
-            .values({
-              name: derived.name,
-              testUrl: null,
-              buildUrl: null,
-              repositories: body.repositories ?? [],
-              createdAt: now,
-            })
-            .run();
-          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
-        }
-        effectivePkg = real;
+        effectivePkg = ensurePackage(db, derived.name, body.repositories ?? [], now);
       }
       try {
         db.insert(versions)
@@ -564,7 +198,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     if (body.file !== undefined && pkg.repositories.length === 0) {
       // MOV-06: файлу негде жить.
@@ -579,7 +213,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
 
     const now = new Date();
     if (body.file !== undefined) {
-      let derived: ParsedArtifact;
+      let derived;
       try {
         derived = await writeArtifactToRepos(
           db,
@@ -596,23 +230,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       }
       // PRS-07 resolveName: файл размещён под фактическим именем —
       // версия привязывается к фактическому пакету (создаётся при необходимости).
-      let versionPkg = pkg;
-      if (derived.name !== name) {
-        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
-        if (!real) {
-          db.insert(packages)
-            .values({
-              name: derived.name,
-              testUrl: null,
-              buildUrl: null,
-              repositories: [],
-              createdAt: now,
-            })
-            .run();
-          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
-        }
-        versionPkg = real;
-      }
+      const versionPkg =
+        derived.name !== name ? ensurePackage(db, derived.name, [], now) : pkg;
       // ADD-03: дубль проверяется по фактической версии файла.
       const dupDerived = db
         .select()
@@ -648,7 +267,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   // PKG-01, UPD-02, GET одного пакета.
   app.get("/:name", (c) => {
     const name = c.req.param("name");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     return c.json(buildPackageResponse(deps, pkg));
   });
@@ -656,7 +275,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   // UPD-02, ADD-05. Обновление полей пакета.
   app.put("/:name", async (c) => {
     const name = c.req.param("name");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     let body: z.infer<typeof updateBodySchema>;
     try {
@@ -671,14 +290,14 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       })
       .where(eq(packages.name, name))
       .run();
-    const updated = db.select().from(packages).where(eq(packages.name, name)).get();
+    const updated = getPackage(db, name);
     return c.json(buildPackageResponse(deps, updated!));
   });
 
   // MOV-01..06. Размещение в репозиториях.
   app.patch("/:name", async (c) => {
     const name = c.req.param("name");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     let body: z.infer<typeof repositoriesBodySchema>;
     try {
@@ -704,7 +323,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .from(versions)
       .where(eq(versions.packageName, name))
       .all();
-    const fresh = db.select().from(packages).where(eq(packages.name, name)).get()!;
+    const fresh = getPackage(db, name)!;
     for (const row of rowData) {
       try {
         const content = await (async () => {
@@ -724,14 +343,14 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         // не блокирует размещение
       }
     }
-    const updated = db.select().from(packages).where(eq(packages.name, name)).get();
+    const updated = getPackage(db, name);
     return c.json(buildPackageResponse(deps, updated!));
   });
 
   // DEL-01. Удаление пакета целиком.
   app.delete("/:name", async (c) => {
     const name = c.req.param("name");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     const rows = db.select().from(versions).where(eq(versions.packageName, name)).all();
     for (const row of rows) {
@@ -754,7 +373,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) {
       // UPD-03: пакет не объявлен — ленивое обновление индекса по файлу в репозиториях.
       const repos = db.select().from(repositories).all();
@@ -788,7 +407,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           createdAt: now,
         })
         .run();
-      const created = db.select().from(packages).where(eq(packages.name, name)).get();
+      const created = getPackage(db, name);
       return c.json(buildPackageResponse(deps, created!));
     }
 
@@ -829,7 +448,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       return c.json({ error: "no_changes" }, 409);
     }
     // UPD-01: перезапись при разной хэшсумме — варнинг.
-    let derived: ParsedArtifact;
+    let derived;
     try {
       derived = await writeArtifactToRepos(
         db,
@@ -854,22 +473,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           new ArtifactError("artifact_version_mismatch", derived),
         );
       }
-      let versionPkg = pkg;
       if (derived.name !== name) {
-        let real = db.select().from(packages).where(eq(packages.name, derived.name)).get();
-        if (!real) {
-          db.insert(packages)
-            .values({
-              name: derived.name,
-              testUrl: null,
-              buildUrl: null,
-              repositories: [],
-              createdAt: new Date(),
-            })
-            .run();
-          real = db.select().from(packages).where(eq(packages.name, derived.name)).get()!;
-        }
-        versionPkg = real;
+        ensurePackage(db, derived.name, [], new Date());
       }
       const dup = db
         .select()
@@ -907,7 +512,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (!nameSchema.safeParse(name).success || !versionSchema.safeParse(version).success) {
       return c.json({ error: "invalid_request" }, 400);
     }
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     const row = db
       .select()
@@ -933,7 +538,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   // TST-01: фантом нельзя тестировать.
   app.post("/:name/test", async (c) => {
     const name = c.req.param("name");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     const rows = db.select().from(versions).where(eq(versions.packageName, name)).all();
     if (rows.length === 0) return c.json({ error: "phantom" }, 400);
@@ -945,7 +550,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   app.post("/:name/versions/:version/test", async (c) => {
     const name = c.req.param("name");
     const version = c.req.param("version");
-    const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+    const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     const row = db
       .select()
@@ -1123,114 +728,4 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   });
 
   return app;
-}
-
-/** Шаблонизатор url: подставляет `{id}` и `{name}`/`{version}` в url запуска. */
-function templatizeUrl(url: string, values: Record<string, string>): string {
-  let result = url;
-  for (const [key, value] of Object.entries(values)) {
-    result = result.replaceAll(`{${key}}`, value);
-  }
-  return result;
-}
-
-async function startTest(
-  c: Context,
-  deps: PackageApiDeps,
-  orch: OrchClient,
-  name: string,
-  version: string,
-) {
-  const db = deps.db;
-  let body: z.infer<typeof runBodySchema>;
-  try {
-    body = runBodySchema.parse(await c.req.json());
-  } catch {
-    return c.json({ error: "invalid_request" }, 400);
-  }
-  const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
-  if (!pkg) return c.json({ error: "not_found" }, 404);
-  const testUrl = body.testUrl ?? pkg.testUrl ?? deps.commonTestUrl;
-  // TST-06/ORCH-01: url теста не задан — ошибка.
-  if (!testUrl) return c.json({ error: "no_test_url" }, 400);
-
-  const reqId = c.get("reqId");
-  const now = new Date();
-  db.insert(testJournal)
-    .values({
-      id: reqId,
-      packageName: name,
-      version,
-      status: "running",
-      invalid: false,
-      body: null,
-      createdAt: now,
-    })
-    .run();
-
-  const launchUrl = templatizeUrl(testUrl, { id: reqId });
-  const result = await orch.start(launchUrl);
-  if (!result.ok) {
-    // TST-05: сбой запуска процесса — запись в журнал как ошибка.
-    db.update(testJournal)
-      .set({ status: "error" })
-      .where(eq(testJournal.id, reqId))
-      .run();
-    return c.json({ error: "process_start_failed" }, 502);
-  }
-  // TST-07: ответ на вызов url запуска сохраняется в запись журнала.
-  if (result.response !== undefined) {
-    db.update(testJournal)
-      .set({ body: result.response })
-      .where(eq(testJournal.id, reqId))
-      .run();
-  }
-  return c.json({ id: reqId }, 202);
-}
-
-async function startBuild(
-  c: Context,
-  deps: PackageApiDeps,
-  orch: OrchClient,
-  name: string,
-  version: string,
-) {
-  const db = deps.db;
-  const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
-  if (!pkg) return c.json({ error: "not_found" }, 404);
-  const buildUrl = pkg.buildUrl ?? deps.commonBuildUrl;
-  // ORCH-01: нет настроенных процессов — ошибка.
-  if (!buildUrl) return c.json({ error: "no_build_url" }, 400);
-
-  const reqId = c.get("reqId");
-  const now = new Date();
-  db.insert(buildJournal)
-    .values({
-      id: reqId,
-      packageName: name,
-      version,
-      resultVersion: null,
-      status: "running",
-      invalid: false,
-      body: null,
-      createdAt: now,
-    })
-    .run();
-
-  const launchUrl = templatizeUrl(buildUrl, { id: reqId });
-  const result = await orch.start(launchUrl);
-  if (!result.ok) {
-    db.update(buildJournal)
-      .set({ status: "error" })
-      .where(eq(buildJournal.id, reqId))
-      .run();
-    return c.json({ error: "process_start_failed" }, 502);
-  }
-  if (result.response !== undefined) {
-    db.update(buildJournal)
-      .set({ body: result.response })
-      .where(eq(buildJournal.id, reqId))
-      .run();
-  }
-  return c.json({ id: reqId }, 202);
 }
