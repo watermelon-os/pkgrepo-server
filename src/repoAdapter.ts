@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   artifactFileName,
@@ -31,6 +31,7 @@ export interface RepoAdapter {
   isInitialized?: (dir: string, type: string) => boolean;
   inspect: (type: string, filePath: string) => Promise<ParsedArtifact | undefined>;
   update: (dir: string, type: string, name: string, version?: string) => void | Promise<void>;
+  init?: (dir: string, type: string) => Promise<void>;
 }
 
 /** Бинарники инструментов находятся через PATH (`/usr/bin/env`). */
@@ -229,6 +230,24 @@ export function isRepoInitialized(dir: string, type: string): boolean {
   }
 }
 
+/**
+ * Инициализация репозитория: создание каталога и маркеров формата.
+ * Индекс (repodata/repomd.xml, Packages) перестраивается при добавлении
+ * артефактов через adapter.update.
+ */
+export async function initRepo(dir: string, type: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  if (type === "rpm") {
+    await mkdir(join(dir, "repodata"), { recursive: true });
+  } else if (type === "deb") {
+    const packages = join(dir, "Packages");
+    const release = join(dir, "Release");
+    if (!existsSync(packages) && !existsSync(release)) {
+      await writeFile(packages, "");
+    }
+  }
+}
+
 /** Команды генерации бд репозитория по типу (в порядке попыток). */
 function generatorCommandsFor(
   dir: string,
@@ -321,6 +340,7 @@ export function createRepoAdapter(options: RepoAdapterOptions): RepoAdapter {
     isInitialized: isRepoInitialized,
     inspect: (type, filePath) => inspectPackage(type, filePath, options),
     update: (dir, type, name, version) => updateRepoDb(dir, type, name, version, options),
+    init: initRepo,
   };
 }
 

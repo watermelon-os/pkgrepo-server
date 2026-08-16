@@ -11,6 +11,21 @@ const envSchema = z.object({
   SERVER_PORT: z.coerce.number().int().positive().max(65535).default(34817),
   DATABASE_PATH: z.string().min(1).default("data/watermelon.db"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  // Стандартные поля лога в каждой строке (time, level, logger, msg), через запятую.
+  // По умолчанию пусто — ключи стандартных полей скрыты, значения выводятся.
+  LOG_STANDARD_FIELDS: z.preprocess(
+    (value) =>
+      value === undefined
+        ? []
+        : String(value)
+            .toLowerCase()
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+    z.array(z.enum(["time", "level", "logger", "msg"])).default([]),
+  ),
+  // Корневой каталог репозиториев; пустой — авто-создание/инициализация выключены.
+  REPO_ROOT: z.string().default(""),
   USE_PACKAGE_UTILITIES: z
     .preprocess(
       (value) => (value === undefined ? undefined : String(value).toLowerCase()),
@@ -79,6 +94,11 @@ export function loadConfig(
     DATABASE_PATH: path.isAbsolute(parsed.DATABASE_PATH)
       ? parsed.DATABASE_PATH
       : path.join(baseDir, parsed.DATABASE_PATH),
+    REPO_ROOT: parsed.REPO_ROOT
+      ? path.isAbsolute(parsed.REPO_ROOT)
+        ? parsed.REPO_ROOT
+        : path.join(baseDir, parsed.REPO_ROOT)
+      : "",
   };
 }
 

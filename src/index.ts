@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { existsSync } from "node:fs";
 import { createApp, generateRequestId } from "./app.js";
 import { runSync } from "./api/packages.js";
 import { loadConfig, loadDotEnv } from "./config.js";
@@ -11,14 +12,47 @@ import { readVersion } from "./version.js";
 async function main(): Promise<void> {
   loadDotEnv(".env");
   const config = loadConfig();
-  const logger = createLogger({ level: config.LOG_LEVEL, name: "watermelon-server-ts" });
+  const logger = createLogger({
+    level: config.LOG_LEVEL,
+    name: "watermelon-server-ts",
+    standardFields: config.LOG_STANDARD_FIELDS,
+  });
+
+  // Настройки печатаются при старте (только несекретные).
+  logger.info("configuration", {
+    node_env: config.NODE_ENV,
+    host: config.SERVER_HOST,
+    port: config.SERVER_PORT,
+    database_path: config.DATABASE_PATH,
+    log_level: config.LOG_LEVEL,
+    standard_fields: config.LOG_STANDARD_FIELDS.length ? config.LOG_STANDARD_FIELDS.join(",") : "(none)",
+    repo_root: config.REPO_ROOT || "(unset)",
+    use_package_utilities: config.USE_PACKAGE_UTILITIES,
+    sync_interval_seconds: config.SYNC_INTERVAL_SECONDS,
+  });
+
+  // REPO_ROOT обязан существовать: он — подготовленный корень для авто-создания.
+  if (config.REPO_ROOT && !existsSync(config.REPO_ROOT)) {
+    logger.error("REPO_ROOT does not exist", { root: config.REPO_ROOT });
+    process.exit(1);
+  }
+  if (!config.REPO_ROOT) {
+    // Рут не задан — авто-создание/инициализация путей репозиториев выключены.
+    logger.warn("REPO_ROOT is not set: repository paths must exist and be initialized beforehand");
+  }
 
   await runMigrations(config.DATABASE_PATH, undefined, logger);
   const { db, sqlite } = await openDb(config.DATABASE_PATH);
 
   const version = await readVersion();
   const repoAdapter = createRepoAdapter({ useUtilities: config.USE_PACKAGE_UTILITIES, logger });
-  const app = createApp({ db, version, logger, repoAdapter });
+  const app = createApp({
+    db,
+    version,
+    logger,
+    repoAdapter,
+    fsRoot: config.REPO_ROOT || undefined,
+  });
 
   serve(
     { fetch: app.fetch, hostname: config.SERVER_HOST, port: config.SERVER_PORT },

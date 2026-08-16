@@ -1,15 +1,20 @@
 import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono } from "hono";
 import type { DatabaseClient } from "../db/index.js";
 import { packages, repositories } from "../db/schema.js";
 import { createLogger, type Logger } from "../logger.js";
-import { isRepoInitialized } from "../repoAdapter.js";
+import { initRepo, isRepoInitialized, type RepoAdapter } from "../repoAdapter.js";
 
 export interface ReposApiDeps {
   db: DatabaseClient;
   logger?: Logger;
+  /** Корневой каталог репозиториев; при заданном — авто-создание/инициализация путей. */
+  fsRoot?: string;
+  repoAdapter?: RepoAdapter;
 }
 
 const createdBodySchema = z.object({
@@ -17,6 +22,24 @@ const createdBodySchema = z.object({
   path: z.string().min(1),
   type: z.enum(["rpm", "deb"]),
 });
+
+/**
+ * Приведение пути репозитория к абсолютному. Без корня — как есть.
+ * С корнем: относительный путь резолвится внутри корня, абсолютный обязан
+ * находиться внутри корня (защита от выхода через ../).
+ */
+function resolveRepoPath(
+  fsRoot: string | undefined,
+  requested: string,
+): { ok: true; path: string } | { ok: false; error: string } {
+  if (!fsRoot) return { ok: true, path: requested };
+  const root = resolve(fsRoot);
+  const candidate = isAbsolute(requested) ? resolve(requested) : resolve(root, requested);
+  const rel = relative(root, candidate);
+  const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (outside) return { ok: false, error: "repository_path_outside_root" };
+  return { ok: true, path: candidate };
+}
 
 export function repoRoutes(deps: ReposApiDeps): Hono {
   const db = deps.db;
@@ -39,13 +62,26 @@ export function repoRoutes(deps: ReposApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
+    const resolved = resolveRepoPath(deps.fsRoot, body.path);
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, 400);
+    }
+    body.path = resolved.path;
     if (!existsSync(body.path)) {
-      // REP-02: путь не существует — ошибка.
-      return c.json({ error: "repository_path_not_found" }, 400);
+      if (!deps.fsRoot) {
+        // REP-02: путь не существует — ошибка.
+        return c.json({ error: "repository_path_not_found" }, 400);
+      }
+      // Под корнем (REPO_ROOT) отсутствующий каталог создаётся сервером.
+      await mkdir(body.path, { recursive: true });
     }
     if (!isRepoInitialized(body.path, body.type)) {
-      // REP-03: не проинициализирована — нет маркеров типа.
-      return c.json({ error: "repository_not_initialized" }, 400);
+      if (!deps.fsRoot) {
+        // REP-03: не проинициализирована — нет маркеров типа.
+        return c.json({ error: "repository_not_initialized" }, 400);
+      }
+      // Под корнем отсутствующие маркеры формата создаются сервером.
+      await initRepo(body.path, body.type);
     }
     const existing = db.select().from(repositories).where(eq(repositories.name, body.name)).get();
     if (existing) {

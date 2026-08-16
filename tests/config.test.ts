@@ -83,4 +83,20 @@ describe("server configuration", () => {
       loadConfig({ SYNC_INTERVAL_SECONDS: "-5" } as never, "/tmp"),
     ).toThrow();
   });
+
+  it("ключи стандартных полей лога по умолчанию отключены", () => {
+    delete process.env.LOG_STANDARD_FIELDS;
+    const cfg = loadConfig({} as never, "/tmp");
+    expect(cfg.LOG_STANDARD_FIELDS).toEqual([]);
+  });
+
+  it("парсит список стандартных полей лога", () => {
+    const cfg = loadConfig({ LOG_STANDARD_FIELDS: "time,logger" } as never, "/tmp");
+    expect(cfg.LOG_STANDARD_FIELDS).toEqual(["time", "logger"]);
+  });
+
+  it("игнорирует неизвестные и пустые значения стандартных полей", () => {
+    const cfg = loadConfig({ LOG_STANDARD_FIELDS: " time,  ,bogus " } as never, "/tmp");
+    expect(cfg.LOG_STANDARD_FIELDS).toEqual(["time"]);
+  });
 });

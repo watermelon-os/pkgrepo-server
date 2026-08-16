@@ -20,6 +20,10 @@ function emptyDir(): string {
   return mkdtempSync(join(tmpdir(), "wm-test-"));
 }
 
+function repoRoot(): string {
+  return mkdtempSync(join(tmpdir(), "wm-root-"));
+}
+
 describe("repositories", () => {
   // REP-01. Создание репозитория
   it("создает репозиторий по проинициализированной директории", async () => {
@@ -124,6 +128,81 @@ describe("repositories", () => {
     const got = await json(app, "/api/packages/nginx");
     const body = (await got.json()) as { repositories?: string[] };
     expect(body.repositories).toEqual([]);
+  });
+});
+
+describe("repositories under REPO_ROOT: авто-создание и инициализация", () => {
+  // REP-08. Относительный путь внутри корня — каталог и маркеры создаются
+  it("создаёт каталог и инициализирует rpm по относительному пути", async () => {
+    const root = repoRoot();
+    const { app } = makeApp({ fsRoot: root });
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "rpm-bla", path: "rpm/bla", type: "rpm" },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { path: string };
+    expect(body.path).toBe(join(root, "rpm", "bla"));
+    expect(existsSync(join(root, "rpm", "bla", "repodata"))).toBe(true);
+  });
+
+  it("создаёт deb-маркер Packages по вложенному относительному пути", async () => {
+    const root = repoRoot();
+    const { app } = makeApp({ fsRoot: root });
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "stag", path: "staging/2026/08", type: "deb" },
+    });
+    expect(res.status).toBe(201);
+    expect(existsSync(join(root, "staging", "2026", "08", "Packages"))).toBe(true);
+  });
+
+  it("инициализирует существующий каталог без маркеров", async () => {
+    const root = repoRoot();
+    const dir = join(root, "rpm", "x8");
+    mkdirSync(dir, { recursive: true });
+    const { app } = makeApp({ fsRoot: root });
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "x8", path: "rpm/x8", type: "rpm" },
+    });
+    expect(res.status).toBe(201);
+    expect(existsSync(join(dir, "repodata"))).toBe(true);
+  });
+
+  it("принимает абсолютный путь внутри корня", async () => {
+    const root = repoRoot();
+    const { app } = makeApp({ fsRoot: root });
+    const abs = join(root, "rpm", "bla");
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "abs", path: abs, type: "rpm" },
+    });
+    expect(res.status).toBe(201);
+    expect(existsSync(abs)).toBe(true);
+  });
+
+  it("отклоняет абсолютный путь вне корня", async () => {
+    const root = repoRoot();
+    const { app } = makeApp({ fsRoot: root });
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "evil", path: "/etc", type: "rpm" },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("repository_path_outside_root");
+  });
+
+  it("отклоняет выход из корня через ../", async () => {
+    const root = repoRoot();
+    mkdirSync(join(root, "sub"), { recursive: true });
+    const { app } = makeApp({ fsRoot: root });
+    const res = await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "esc", path: "sub/../../..", type: "deb" },
+    });
+    expect(res.status).toBe(400);
   });
 });
 
