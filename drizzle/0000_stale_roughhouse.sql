@@ -18,6 +18,13 @@ CREATE TABLE `packages` (
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `repositories` (
+	`name` text PRIMARY KEY NOT NULL,
+	`path` text NOT NULL,
+	`type` text NOT NULL,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE `test_journal` (
 	`id` text PRIMARY KEY NOT NULL,
 	`package_name` text NOT NULL,

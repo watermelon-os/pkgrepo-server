@@ -53,48 +53,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     });
 
   program
-    .command("meta")
-    .description("Read generic app metadata via GET /api/meta/:key")
-    .argument("<key>", "metadata key")
-    .action(async (key: string) => {
-      const { ok, status, body } = await fetchJson(
-        `${baseUrl(toServerOptions(program.optsWithGlobals()))}/api/meta/${key}`,
-      );
-      if (ok) {
-        console.log(JSON.stringify(body, null, 2));
-      } else {
-        console.error(`meta failed: HTTP ${status}`);
-        process.exitCode = 1;
-      }
-    });
-
-  program
-    .command("meta-set")
-    .description("Write generic app metadata via PUT /api/meta/:key")
-    .argument("<key>", "metadata key")
-    .argument("<value>", "metadata value")
-    .action(async (key: string, value: string) => {
-      const opts = program.optsWithGlobals();
-      const res = await fetch(`${baseUrl(toServerOptions(opts))}/api/meta/${key}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value }),
-      });
-      let body: unknown = null;
-      try {
-        body = await res.json();
-      } catch {
-        // Non-JSON response body.
-      }
-      if (res.ok) {
-        console.log(JSON.stringify(body, null, 2));
-      } else {
-        console.error(`meta-set failed: HTTP ${res.status}`);
-        process.exitCode = 1;
-      }
-    });
-
-  program
     .command("version")
     .description("Print the server package version")
     .action(() => {

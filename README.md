@@ -48,8 +48,6 @@ npm start             # node dist/index.js
 
 ```sh
 npm run cli -- status          # GET /api/health
-npm run cli -- meta <key>      # GET /api/meta/:key
-npm run cli -- meta-set <key> <value>   # PUT /api/meta/:key
 npm run cli -- version         # print package version
 ```
 
@@ -64,7 +62,7 @@ src/
   config.ts        env config (Zod)
   version.ts       reads package.json via node:fs/promises
   cli.ts           Commander CLI (HTTP client)
-  api/             REST endpoints (health, meta) with Zod schemas
+  api/             REST endpoints with Zod schemas
   web/pages.tsx    SSR HTML pages (Hono JSX)
   db/              drizzle client, schema, migration runner
 drizzle/           generated SQL migrations

@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { healthRoutes } from "./api/health.js";
-import { metaRoutes } from "./api/meta.js";
 import { packageRoutes } from "./api/packages.js";
 import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
@@ -66,7 +65,6 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.route("/api/health", healthRoutes({ ...deps, startedAt: deps.startedAt ?? Date.now() }));
-  app.route("/api/meta", metaRoutes(deps.db));
   app.route("/api/packages", packageRoutes(deps));
   app.route("/api/repos", repoRoutes(deps));
 

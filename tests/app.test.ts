@@ -35,51 +35,6 @@ describe("GET /api/health", () => {
   });
 });
 
-describe("app_meta key/value API", () => {
-  it("returns 404 for a missing key", async () => {
-    const { app } = makeApp();
-    const res = await app.request("/api/meta/missing");
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "not_found" });
-  });
-
-  it("creates, reads and updates a key", async () => {
-    const { app } = makeApp();
-    const put = await app.request("/api/meta/foo", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ value: "bar" }),
-    });
-    expect(put.status).toBe(201);
-    expect(await put.json()).toEqual({ key: "foo", value: "bar" });
-
-    const get = await app.request("/api/meta/foo");
-    expect(get.status).toBe(200);
-    expect(await get.json()).toEqual({ key: "foo", value: "bar" });
-
-    const update = await app.request("/api/meta/foo", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ value: "baz" }),
-    });
-    expect(update.status).toBe(201);
-    expect(await update.json()).toEqual({ key: "foo", value: "baz" });
-  });
-
-  it("rejects invalid keys and bodies", async () => {
-    const { app } = makeApp();
-    const badKey = await app.request("/api/meta/bad key!");
-    expect(badKey.status).toBe(400);
-
-    const badBody = await app.request("/api/meta/ok", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ value: 42 }),
-    });
-    expect(badBody.status).toBe(400);
-  });
-});
-
 describe("routing", () => {
   it("returns JSON 404 for unknown API routes", async () => {
     const { app } = makeApp();

@@ -1,13 +1,5 @@
 import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
 
-export const appMeta = sqliteTable("app_meta", {
-  key: text("key").primaryKey(),
-  value: text("value").notNull(),
-});
-
-export type AppMeta = typeof appMeta.$inferSelect;
-export type NewAppMeta = typeof appMeta.$inferInsert;
-
 export const packages = sqliteTable("packages", {
   name: text("name").primaryKey(),
   testUrl: text("test_url"),
