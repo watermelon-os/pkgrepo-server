@@ -64,4 +64,23 @@ describe("server configuration", () => {
     const cfg = loadConfig({ USE_PACKAGE_UTILITIES: "false" } as never, "/tmp");
     expect(cfg.USE_PACKAGE_UTILITIES).toBe(false);
   });
+
+  it("синхронизация с фс имеет период по умолчанию", () => {
+    delete process.env.SYNC_INTERVAL_SECONDS;
+    const cfg = loadConfig({} as never, "/tmp");
+    expect(cfg.SYNC_INTERVAL_SECONDS).toBe(300);
+  });
+
+  it("нулевой период отключает фоновую синхронизацию", () => {
+    delete process.env.SYNC_INTERVAL_SECONDS;
+    const cfg = loadConfig({ SYNC_INTERVAL_SECONDS: "0" } as never, "/tmp");
+    expect(cfg.SYNC_INTERVAL_SECONDS).toBe(0);
+  });
+
+  it("отклоняет отрицательный период синхронизации", () => {
+    delete process.env.SYNC_INTERVAL_SECONDS;
+    expect(() =>
+      loadConfig({ SYNC_INTERVAL_SECONDS: "-5" } as never, "/tmp"),
+    ).toThrow();
+  });
 });

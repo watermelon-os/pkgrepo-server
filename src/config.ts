@@ -17,6 +17,8 @@ const envSchema = z.object({
       z.enum(["true", "false", "1", "0"]).default("true"),
     )
     .transform((value) => value === "true" || value === "1"),
+  // Период фоновой синхронизации с фс в секундах; 0 — выключить.
+  SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(300),
 });
 
 export type Config = z.infer<typeof envSchema>;

@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
-import { createApp } from "./app.js";
+import { createApp, generateRequestId } from "./app.js";
+import { runSync } from "./api/packages.js";
 import { loadConfig, loadDotEnv } from "./config.js";
 import { openDb } from "./db/index.js";
 import { runMigrations } from "./db/migrate.js";
@@ -29,8 +30,35 @@ async function main(): Promise<void> {
     },
   );
 
+  // Фоновая синхронизация с фс (SVR-03): периодический скан репозиториев.
+  let syncing = false;
+  const syncDeps = { db, logger, repoAdapter };
+  const syncRun = async (): Promise<void> => {
+    if (syncing) {
+      logger.warn("sync: skipped, previous run still in progress");
+      return;
+    }
+    syncing = true;
+    try {
+      await runSync(syncDeps, generateRequestId());
+    } catch (error) {
+      logger.error("sync: run failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      syncing = false;
+    }
+  };
+  const syncTimer: ReturnType<typeof setInterval> | undefined =
+    config.SYNC_INTERVAL_SECONDS > 0
+      ? setInterval(() => {
+          void syncRun();
+        }, config.SYNC_INTERVAL_SECONDS * 1000)
+      : undefined;
+
   const shutdown = (): void => {
     logger.info("shutting down");
+    if (syncTimer !== undefined) clearInterval(syncTimer);
     sqlite.close();
     process.exit(0);
   };
