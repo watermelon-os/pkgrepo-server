@@ -9,10 +9,7 @@ const envSchema = z.object({
   SERVER_HOST: z.string().min(1).default("0.0.0.0"),
   SERVER_PORT: z.coerce.number().int().positive().max(65535).default(3000),
   DATABASE_PATH: z.string().min(1).default("data/watermelon.db"),
-  DEBUG: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((v) => v === "true"),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
 export type Config = z.infer<typeof envSchema>;
