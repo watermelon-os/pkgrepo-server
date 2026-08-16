@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { healthRoutes } from "./api/health.js";
 import { metaRoutes } from "./api/meta.js";
-import { webRoutes } from "./web/pages.js";
 import type { DatabaseClient } from "./db/index.js";
 
 export interface AppDeps {
@@ -13,7 +12,6 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
-  app.route("/", webRoutes(deps));
   app.route("/api/health", healthRoutes({ ...deps, startedAt: deps.startedAt ?? Date.now() }));
   app.route("/api/meta", metaRoutes(deps.db));
 
