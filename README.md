@@ -8,7 +8,6 @@
 - **Zod** — runtime schemas, validation, and static typing of input/output
 - **Drizzle ORM** — SQLite database access, `drizzle-kit` for migrations
 - **better-sqlite3** — synchronous SQLite driver
-- **Hono JSX (TSX)** — server-side rendering of simple informational pages
 - **Vitest** — unit/integration tests
 - **Commander** — a separate CLI that talks to the server over HTTP
 - Standard `node:fs/promises` and `node:path` for filesystem access
@@ -27,7 +26,7 @@ npm run db:migrate    # apply migrations (creates data/watermelon.db)
 ```
 
 Environment is read from `.env` when present (see `.env.example`):
-`SERVER_HOST`, `SERVER_PORT`, `DATABASE_PATH`, `DEBUG`.
+`SERVER_HOST`, `SERVER_PORT`, `DATABASE_PATH`, `LOG_LEVEL`, `USE_PACKAGE_UTILITIES`, `SYNC_INTERVAL_SECONDS`.
 
 ## Development
 
@@ -57,13 +56,16 @@ After `npm run build`, the CLI is also available as `wmserver-ts`.
 
 ```
 src/
-  index.ts         server entry point
+  index.ts         server entry point (migrations, sync timer)
   app.ts           Hono app assembly
   config.ts        env config (Zod)
+  logger.ts        structured logging
   version.ts       reads package.json via node:fs/promises
   cli.ts           Commander CLI (HTTP client)
-  api/             REST endpoints with Zod schemas
-  web/pages.tsx    SSR HTML pages (Hono JSX)
+  artifacts.ts     artifact filename templates + name parser
+  repoAdapter.ts   package-tool inspectors and repo DB generators
+  api/             REST endpoints (health, repos, packages) with Zod schemas
+  api/packages/    packages logic: schemas, artifacts, response, process, sync
   db/              drizzle client, schema, migration runner
 drizzle/           generated SQL migrations
 tests/             vitest suite (in-memory SQLite)
