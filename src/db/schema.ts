@@ -16,6 +16,16 @@ export const packages = sqliteTable("packages", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+export const repositories = sqliteTable("repositories", {
+  name: text("name").primaryKey(),
+  path: text("path").notNull(),
+  type: text("type").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export type Repository = typeof repositories.$inferSelect;
+export type NewRepository = typeof repositories.$inferInsert;
+
 export type Package = typeof packages.$inferSelect;
 export type NewPackage = typeof packages.$inferInsert;
 

@@ -1,20 +1,26 @@
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono, type Context } from "hono";
-import type { OrchClient } from "../app.js";
+import type { OrchClient, Token } from "../app.js";
 import type { DatabaseClient } from "../db/index.js";
 import {
   buildJournal,
   packages,
+  repositories,
   testJournal,
   versions,
 } from "../db/schema.js";
 import { createLogger, type Logger } from "../logger.js";
+
+export interface RepoAdapter {
+  isInitialized?: (dir: string, type: string) => boolean;
+  update: (name: string, version?: string) => void | Promise<void>;
+}
 
 export interface PackageApiDeps {
   db: DatabaseClient;
@@ -23,6 +29,8 @@ export interface PackageApiDeps {
   commonBuildUrl?: string;
   orch?: OrchClient;
   logger?: Logger;
+  tokens?: Token[];
+  repoAdapter?: RepoAdapter;
 }
 
 const nameSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9._+~-]+$/);
@@ -34,6 +42,7 @@ const createBodySchema = z.object({
   file: z.string().optional(),
   testUrl: z.string().url().optional(),
   buildUrl: z.string().url().optional(),
+  repositories: z.array(z.string().min(1)).optional(),
 });
 
 const updateBodySchema = z.object({
@@ -60,17 +69,13 @@ const runBodySchema = z.object({
   version: versionSchema.optional(),
 });
 
-const callbackBodySchema = z.object({
-  result: z.enum(["ok", "fail"]),
-  version: versionSchema.optional(),
-});
-
 function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function artifactPath(fsRoot: string, name: string, version: string): string {
-  return join(fsRoot, `${name}-${version}.rpm`);
+function artifactFileName(name: string, version: string, type: string): string {
+  const ext = type === "deb" ? "deb" : "rpm";
+  return `${name}-${version}.${ext}`;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -78,33 +83,89 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`.*${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}.*`);
 }
 
-function isExistingDir(dir: string): boolean {
-  try {
-    return statSync(dir).isDirectory();
-  } catch {
-    return false;
+/** Разбор имени файла по шаблону `{name}-{version}.{ext}`: версия — сегмент после последнего `-`. */
+function parseArtifactName(
+  fileName: string,
+  type: string,
+): { name: string; version: string } | undefined {
+  const ext = `.${type === "deb" ? "deb" : "rpm"}`;
+  if (!fileName.endsWith(ext)) return undefined;
+  const base = fileName.slice(0, -ext.length);
+  const idx = base.lastIndexOf("-");
+  if (idx <= 0) return undefined;
+  const name = base.slice(0, idx);
+  const version = base.slice(idx + 1);
+  if (!nameSchema.safeParse(name).success || !versionSchema.safeParse(version).success) {
+    return undefined;
   }
+  return { name, version };
 }
 
-async function writeArtifact(
-  fsRoot: string,
+function repositoryByIdentity(db: DatabaseClient, name: string) {
+  return db.select().from(repositories).where(eq(repositories.name, name)).get();
+}
+
+function reposOf(
+  db: DatabaseClient,
+  pkg: { repositories: string[] },
+): Array<{ name: string; path: string; type: string }> {
+  return pkg.repositories
+    .map((name) => repositoryByIdentity(db, name))
+    .filter((r): r is NonNullable<typeof r> => r !== undefined);
+}
+
+/** Запись файла во временный файл + атомарный rename внутри каждого репозитория пакета. */
+async function writeArtifactToRepos(
+  db: DatabaseClient,
+  pkg: { repositories: string[] },
   name: string,
   version: string,
   content: string,
+  adapter?: RepoAdapter,
 ): Promise<void> {
-  const target = artifactPath(fsRoot, name, version);
-  await mkdir(fsRoot, { recursive: true });
-  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, content);
-  await rename(tmp, target);
+  for (const repo of reposOf(db, pkg)) {
+    const target = join(repo.path, artifactFileName(name, version, repo.type));
+    await mkdir(repo.path, { recursive: true });
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, content);
+    await rename(tmp, target);
+    if (adapter) {
+      await adapter.update(name, version);
+    }
+  }
 }
 
-async function removeArtifact(fsRoot: string, name: string, version: string): Promise<void> {
-  try {
-    await rm(artifactPath(fsRoot, name, version), { force: true });
-  } catch {
-    // File not present — nothing to remove.
+async function removeArtifactFromRepos(
+  db: DatabaseClient,
+  pkg: { repositories: string[] },
+  name: string,
+  version: string,
+): Promise<void> {
+  for (const repo of reposOf(db, pkg)) {
+    try {
+      await rm(join(repo.path, artifactFileName(name, version, repo.type)), { force: true });
+    } catch {
+      // File not present — nothing to remove.
+    }
   }
+}
+
+/** Наличие файла в одном из репозиториев пакета (для ленивого индекса). */
+async function artifactExistsInRepos(
+  db: DatabaseClient,
+  pkg: { repositories: string[] },
+  name: string,
+  version: string,
+): Promise<boolean> {
+  for (const repo of reposOf(db, pkg)) {
+    try {
+      await access(join(repo.path, artifactFileName(name, version, repo.type)), fsConstants.F_OK);
+      return true;
+    } catch {
+      // not in this repo
+    }
+  }
+  return false;
 }
 
 export interface VersionStatus {
@@ -199,12 +260,78 @@ function buildPackageResponse(
 
 export function packageRoutes(deps: PackageApiDeps): Hono {
   const db = deps.db;
-  const fsRoot = deps.fsRoot ?? resolve(process.cwd(), "data/artifacts");
   const logger = deps.logger ?? createLogger({ level: "info" });
   const orch: OrchClient =
-    deps.orch ?? { start: async () => ({ ok: true, error: undefined }) };
+    deps.orch ?? { start: async () => ({ ok: true, error: undefined, response: undefined }) };
+  const adapter = deps.repoAdapter;
 
   const app = new Hono();
+
+  // SYNC: ручной запуск синхронизации с фс (SVR-03).
+  app.post("/sync", async (c) => {
+    const reqId = c.get("reqId");
+    const repos = db.select().from(repositories).all();
+    let picked = 0;
+    for (const repo of repos) {
+      let files: string[] = [];
+      try {
+        files = await readdir(repo.path);
+      } catch {
+        logger.warn("sync: cannot read repository", { req_id: reqId, repo: repo.name });
+        continue;
+      }
+      for (const file of files) {
+        const parsed = parseArtifactName(file, repo.type);
+        if (!parsed) continue; // неразбираемое имя — только пропускаем
+        const { name, version } = parsed;
+        let pkg = db.select().from(packages).where(eq(packages.name, name)).get();
+        if (!pkg) {
+          db.insert(packages)
+            .values({
+              name,
+              testUrl: null,
+              buildUrl: null,
+              repositories: [repo.name],
+              createdAt: new Date(),
+            })
+            .run();
+          pkg = db.select().from(packages).where(eq(packages.name, name)).get()!;
+        } else if (!pkg.repositories.includes(repo.name)) {
+          db.update(packages)
+            .set({ repositories: [...pkg.repositories, repo.name] })
+            .where(eq(packages.name, name))
+            .run();
+        }
+        const existing = db
+          .select()
+          .from(versions)
+          .where(and(eq(versions.packageName, name), eq(versions.version, version)))
+          .get();
+        if (existing) continue; // идемпотентность
+        const target = join(repo.path, artifactFileName(name, version, repo.type));
+        let content = "";
+        try {
+          content = await import("node:fs/promises").then((m) => m.readFile(target, "utf8"));
+        } catch {
+          logger.warn("sync: cannot read artifact", { req_id: reqId, repo: repo.name, file });
+          continue;
+        }
+        db.insert(versions)
+          .values({
+            packageName: name,
+            version,
+            sha256: sha256(content),
+            createdAt: new Date(),
+          })
+          .run();
+        if (adapter) await adapter.update(name, version);
+        picked += 1;
+        logger.info("sync: picked artifact", { req_id: reqId, name, version, repo: repo.name });
+      }
+    }
+    logger.info("sync done", { req_id: reqId, picked });
+    return c.json({ ok: true, picked });
+  });
 
   // SRCH-01..06. Поиск пакетов.
   app.get("/", (c) => {
@@ -257,30 +384,51 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       // ADD-04: фантом при существующем пакете — ошибка.
       return c.json({ error: "package_exists" }, 409);
     }
+    if (body.file !== undefined) {
+      // MOV-06: размещение обязательно при добавлении файла.
+      if (!body.repositories || body.repositories.length === 0) {
+        return c.json({ error: "no_repositories" }, 400);
+      }
+      // MOV-01: репозиторий должен существовать.
+      for (const repoName of body.repositories) {
+        if (!repositoryByIdentity(db, repoName)) {
+          return c.json({ error: "repository_not_found", repository: repoName }, 400);
+        }
+      }
+    }
     const now = new Date();
     db.insert(packages)
       .values({
         name: body.name,
         testUrl: body.testUrl ?? null,
         buildUrl: body.buildUrl ?? null,
-        repositories: [],
+        repositories: body.repositories ?? [],
         createdAt: now,
       })
       .run();
 
     if (body.version !== undefined) {
-      // ADD-01: добавление с файлом — сразу первая версия (или версия без файла).
+      const pkg = db.select().from(packages).where(eq(packages.name, body.name)).get()!;
       if (body.file !== undefined) {
-        await writeArtifact(fsRoot, body.name, body.version, body.file);
+        // Атомарность: сначала фс, потом бд; при сбое бд — компенсация.
+        await writeArtifactToRepos(db, pkg, body.name, body.version, body.file, adapter);
       }
-      db.insert(versions)
-        .values({
-          packageName: body.name,
-          version: body.version,
-          sha256: body.file !== undefined ? sha256(body.file) : "",
-          createdAt: now,
-        })
-        .run();
+      try {
+        db.insert(versions)
+          .values({
+            packageName: body.name,
+            version: body.version,
+            sha256: body.file !== undefined ? sha256(body.file) : "",
+            createdAt: now,
+          })
+          .run();
+      } catch (error) {
+        // ATOM-01: компенсация — удалить записанное в фс.
+        if (body.file !== undefined) {
+          await removeArtifactFromRepos(db, pkg, body.name, body.version);
+        }
+        throw error;
+      }
     }
 
     logger.info("package created", { req_id: reqId, name: body.name });
@@ -300,6 +448,10 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     }
     const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
     if (!pkg) return c.json({ error: "not_found" }, 404);
+    if (body.file !== undefined && pkg.repositories.length === 0) {
+      // MOV-06: файлу негде жить.
+      return c.json({ error: "no_repositories" }, 400);
+    }
     const dup = db
       .select()
       .from(versions)
@@ -309,7 +461,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
 
     const now = new Date();
     if (body.file !== undefined) {
-      await writeArtifact(fsRoot, name, body.version, body.file);
+      await writeArtifactToRepos(db, pkg, name, body.version, body.file, adapter);
     }
     db.insert(versions)
       .values({
@@ -352,7 +504,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     return c.json(buildPackageResponse(deps, updated!));
   });
 
-  // MOV-01..04. Размещение в репозиториях.
+  // MOV-01..06. Размещение в репозиториях.
   app.patch("/:name", async (c) => {
     const name = c.req.param("name");
     const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
@@ -364,16 +516,43 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       // MOV-02: пустой список репозиториев — ошибка.
       return c.json({ error: "invalid_request" }, 400);
     }
-    for (const repo of body.repositories) {
-      if (!isExistingDir(repo)) {
-        // MOV-01/MOV-03: несуществующий репозиторий — ошибка, ничего не меняем.
-        return c.json({ error: "repository_not_found", repository: repo }, 400);
+    // MOV-01: репозитории должны существовать; частичный сбой — ничего не применяем.
+    for (const repoName of body.repositories) {
+      if (!repositoryByIdentity(db, repoName)) {
+        return c.json({ error: "repository_not_found", repository: repoName }, 400);
       }
     }
     db.update(packages)
       .set({ repositories: body.repositories })
       .where(eq(packages.name, name))
       .run();
+
+    // MOV-04: файлы существующих версий попадают в каждый репозиторий из списка.
+    const rowData = db
+      .select()
+      .from(versions)
+      .where(eq(versions.packageName, name))
+      .all();
+    const fresh = db.select().from(packages).where(eq(packages.name, name)).get()!;
+    for (const row of rowData) {
+      try {
+        const content = await (async () => {
+          for (const repo of reposOf(db, fresh)) {
+            const target = join(repo.path, artifactFileName(name, row.version, repo.type));
+            try {
+              return await import("node:fs/promises").then((m) => m.readFile(target, "utf8"));
+            } catch {
+              // not in this repo
+            }
+          }
+          return undefined;
+        })();
+        if (content === undefined) continue;
+        await writeArtifactToRepos(db, fresh, name, row.version, content);
+      } catch {
+        // не блокирует размещение
+      }
+    }
     const updated = db.select().from(packages).where(eq(packages.name, name)).get();
     return c.json(buildPackageResponse(deps, updated!));
   });
@@ -385,7 +564,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (!pkg) return c.json({ error: "not_found" }, 404);
     const rows = db.select().from(versions).where(eq(versions.packageName, name)).all();
     for (const row of rows) {
-      await removeArtifact(fsRoot, name, row.version);
+      await removeArtifactFromRepos(db, pkg, name, row.version);
     }
     db.delete(packages).where(eq(packages.name, name)).run();
     return c.body(null, 204);
@@ -406,12 +585,20 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     }
     const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
     if (!pkg) {
-      // UPD-03: пакет не объявлен — ленивое обновление индекса по файлу на диске.
-      try {
-        await access(artifactPath(fsRoot, name, version), fsConstants.F_OK);
-      } catch {
-        return c.json({ error: "not_found" }, 404);
+      // UPD-03: пакет не объявлен — ленивое обновление индекса по файлу в репозиториях.
+      const repos = db.select().from(repositories).all();
+      let found = false;
+      for (const repo of repos) {
+        const target = join(repo.path, artifactFileName(name, version, repo.type));
+        try {
+          await access(target, fsConstants.F_OK);
+          found = true;
+          break;
+        } catch {
+          // не здесь
+        }
       }
+      if (!found) return c.json({ error: "not_found" }, 404);
       const now = new Date();
       db.insert(packages)
         .values({
@@ -430,9 +617,6 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           createdAt: now,
         })
         .run();
-      if (body.file !== undefined) {
-        await writeArtifact(fsRoot, name, version, body.file);
-      }
       const created = db.select().from(packages).where(eq(packages.name, name)).get();
       return c.json(buildPackageResponse(deps, created!));
     }
@@ -444,10 +628,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .get();
 
     if (!row) {
-      // UPD-03: ленивое обновление индекса — поиск файла на диске.
-      try {
-        await access(artifactPath(fsRoot, name, version), fsConstants.F_OK);
-      } catch {
+      // UPD-03: ленивое обновление индекса — поиск файла в репозиториях.
+      if (!(await artifactExistsInRepos(db, pkg, name, version))) {
         return c.json({ error: "not_found" }, 404);
       }
       const now = new Date();
@@ -460,7 +642,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         })
         .run();
       if (body.file !== undefined) {
-        await writeArtifact(fsRoot, name, version, body.file);
+        await writeArtifactToRepos(db, pkg, name, version, body.file, adapter);
       }
       return c.json(buildPackageResponse(deps, pkg));
     }
@@ -476,7 +658,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       return c.json({ error: "no_changes" }, 409);
     }
     // UPD-01: перезапись при разной хэшсумме — варнинг.
-    await writeArtifact(fsRoot, name, version, body.file);
+    await writeArtifactToRepos(db, pkg, name, version, body.file, adapter);
     db.update(versions)
       .set({ sha256: newHash })
       .where(and(eq(versions.packageName, name), eq(versions.version, version)))
@@ -492,10 +674,10 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     const rows = db.select().from(versions).where(eq(versions.packageName, name)).all();
     if (rows.length === 0) return c.json({ error: "phantom" }, 400);
     const last = rows[rows.length - 1]!;
-    return startTest(c, deps, fsRoot, orch, name, last.version);
+    return startTest(c, deps, orch, name, last.version);
   });
 
-  // TST-02..06. Запуск тестирования версии.
+  // TST-02..07. Запуск тестирования версии.
   app.post("/:name/versions/:version/test", async (c) => {
     const name = c.req.param("name");
     const version = c.req.param("version");
@@ -507,29 +689,40 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .where(and(eq(versions.packageName, name), eq(versions.version, version)))
       .get();
     if (!row) return c.json({ error: "not_found" }, 404);
-    return startTest(c, deps, fsRoot, orch, name, version);
+    return startTest(c, deps, orch, name, version);
   });
 
-  // TST-03: колбэк теста.
+  // TST-03/CBK-01: колбэк теста.
   app.post("/:name/versions/:version/test/:id/callback", async (c) => {
     const id = c.req.param("id");
-    let body: z.infer<typeof callbackBodySchema>;
-    try {
-      body = callbackBodySchema.parse(await c.req.json());
-    } catch {
-      return c.json({ error: "invalid_request" }, 400);
-    }
     const row = db.select().from(testJournal).where(eq(testJournal.id, id)).get();
     if (!row) {
+      // CBK-03: неизвестный id — игнорируем, предупреждение в лог.
       logger.warn("callback for unknown id", { req_id: c.get("reqId"), id });
       return c.json({ error: "not_found" }, 404);
     }
     if (row.status !== "running") {
-      // Повторный колбэк — игнорируется.
+      // CBK-02: повторный колбэк — игнорируется.
       return c.json({ ok: true });
     }
+    // CBK-01: результат из переменной url колбэка ({result}) или из JSON body.
+    const raw = await c.req.text();
+    const queryResult = c.req.query("result");
+    let jsonResult: string | undefined;
+    if (raw.trim() !== "") {
+      try {
+        const parsed = JSON.parse(raw) as { result?: string };
+        jsonResult = parsed.result;
+      } catch {
+        // body — plain text, не обрабатываем
+      }
+    }
+    const result = queryResult ?? jsonResult;
+    if (result !== "ok" && result !== "fail") {
+      return c.json({ error: "invalid_result" }, 400);
+    }
     db.update(testJournal)
-      .set({ status: body.result })
+      .set({ status: result, body: raw })
       .where(eq(testJournal.id, id))
       .run();
     return c.json({ ok: true });
@@ -553,7 +746,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .from(testJournal)
       .where(and(eq(testJournal.packageName, name), eq(testJournal.version, version)))
       .all()
-      .map((row) => ({ id: row.id, status: row.status }))
+      .map((row) => ({ id: row.id, status: row.status, body: row.body ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
     return c.json({ entries });
   });
@@ -568,25 +761,42 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       return c.json({ error: "invalid_request" }, 400);
     }
     const version = body.version ?? "any";
-    return startBuild(c, deps, fsRoot, orch, name, version);
+    return startBuild(c, deps, orch, name, version);
   });
 
   // Сборка конкретной версии.
   app.post("/:name/versions/:version/build", async (c) => {
     const name = c.req.param("name");
     const version = c.req.param("version");
-    return startBuild(c, deps, fsRoot, orch, name, version);
+    return startBuild(c, deps, orch, name, version);
   });
 
-  // BLD-02/03: колбэк сборки.
+  // BLD-02/03, CBK-01: колбэк сборки.
   app.post("/:name/build/:id/callback", async (c) => {
     const id = c.req.param("id");
-    let body: z.infer<typeof callbackBodySchema>;
-    try {
-      body = callbackBodySchema.parse(await c.req.json());
-    } catch {
-      return c.json({ error: "invalid_request" }, 400);
+    const raw = await c.req.text();
+    const queryResult = c.req.query("result");
+    const queryVersion = c.req.query("version");
+    let jsonResult: string | undefined;
+    let jsonVersion: string | undefined;
+    if (raw.trim() !== "") {
+      try {
+        const parsed = JSON.parse(raw) as { result?: string; version?: string };
+        jsonResult = parsed.result;
+        jsonVersion = parsed.version;
+      } catch {
+        // body — plain text, не обрабатываем
+      }
     }
+    const result = queryResult ?? jsonResult;
+    if (result !== "ok" && result !== "fail") {
+      return c.json({ error: "invalid_result" }, 400);
+    }
+    const version = queryVersion ?? jsonVersion;
+    if (version === undefined) return c.json({ error: "invalid_request" }, 400);
+    // BLD-02: раннер обязан дать конкретную версию.
+    if (version === "any") return c.json({ error: "version_required" }, 400);
+
     const row = db.select().from(buildJournal).where(eq(buildJournal.id, id)).get();
     if (!row) {
       logger.warn("callback for unknown id", { req_id: c.get("reqId"), id });
@@ -595,12 +805,9 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (row.status !== "running") {
       return c.json({ ok: true });
     }
-    if (body.version === undefined) return c.json({ error: "invalid_request" }, 400);
-    // BLD-02: раннер обязан дать конкретную версию.
-    if (body.version === "any") return c.json({ error: "version_required" }, 400);
 
     db.update(buildJournal)
-      .set({ status: body.result, resultVersion: body.version })
+      .set({ status: result, resultVersion: version, body: raw })
       .where(eq(buildJournal.id, id))
       .run();
 
@@ -611,7 +818,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .where(
         and(
           eq(versions.packageName, row.packageName),
-          eq(versions.version, body.version),
+          eq(versions.version, version),
         ),
       )
       .get();
@@ -619,7 +826,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       db.insert(versions)
         .values({
           packageName: row.packageName,
-          version: body.version,
+          version,
           sha256: "",
           createdAt: new Date(),
         })
@@ -646,7 +853,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .from(buildJournal)
       .where(and(eq(buildJournal.packageName, name), eq(buildJournal.version, version)))
       .all()
-      .map((row) => ({ id: row.id, status: row.status }))
+      .map((row) => ({ id: row.id, status: row.status, body: row.body ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
     return c.json({ entries });
   });
@@ -654,15 +861,22 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   return app;
 }
 
+/** Шаблонизатор url: подставляет `{id}` и `{name}`/`{version}` в url запуска. */
+function templatizeUrl(url: string, values: Record<string, string>): string {
+  let result = url;
+  for (const [key, value] of Object.entries(values)) {
+    result = result.replaceAll(`{${key}}`, value);
+  }
+  return result;
+}
+
 async function startTest(
   c: Context,
   deps: PackageApiDeps,
-  fsRoot: string,
   orch: OrchClient,
   name: string,
   version: string,
 ) {
-  void fsRoot;
   const db = deps.db;
   let body: z.infer<typeof runBodySchema>;
   try {
@@ -690,7 +904,8 @@ async function startTest(
     })
     .run();
 
-  const result = await orch.start(testUrl);
+  const launchUrl = templatizeUrl(testUrl, { id: reqId });
+  const result = await orch.start(launchUrl);
   if (!result.ok) {
     // TST-05: сбой запуска процесса — запись в журнал как ошибка.
     db.update(testJournal)
@@ -699,18 +914,23 @@ async function startTest(
       .run();
     return c.json({ error: "process_start_failed" }, 502);
   }
+  // TST-07: ответ на вызов url запуска сохраняется в запись журнала.
+  if (result.response !== undefined) {
+    db.update(testJournal)
+      .set({ body: result.response })
+      .where(eq(testJournal.id, reqId))
+      .run();
+  }
   return c.json({ id: reqId }, 202);
 }
 
 async function startBuild(
   c: Context,
   deps: PackageApiDeps,
-  fsRoot: string,
   orch: OrchClient,
   name: string,
   version: string,
 ) {
-  void fsRoot;
   const db = deps.db;
   const pkg = db.select().from(packages).where(eq(packages.name, name)).get();
   if (!pkg) return c.json({ error: "not_found" }, 404);
@@ -733,13 +953,20 @@ async function startBuild(
     })
     .run();
 
-  const result = await orch.start(buildUrl);
+  const launchUrl = templatizeUrl(buildUrl, { id: reqId });
+  const result = await orch.start(launchUrl);
   if (!result.ok) {
     db.update(buildJournal)
       .set({ status: "error" })
       .where(eq(buildJournal.id, reqId))
       .run();
     return c.json({ error: "process_start_failed" }, 502);
+  }
+  if (result.response !== undefined) {
+    db.update(buildJournal)
+      .set({ body: result.response })
+      .where(eq(buildJournal.id, reqId))
+      .run();
   }
   return c.json({ id: reqId }, 202);
 }

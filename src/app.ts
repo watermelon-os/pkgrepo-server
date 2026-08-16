@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { healthRoutes } from "./api/health.js";
 import { metaRoutes } from "./api/meta.js";
 import { packageRoutes } from "./api/packages.js";
+import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
 import { createLogger, type Logger } from "./logger.js";
 
@@ -13,8 +14,16 @@ declare module "hono" {
   }
 }
 
+export interface Token {
+  value: string;
+  comment?: string;
+  role?: string;
+}
+
 export interface OrchClient {
-  start(url: string): Promise<{ ok: boolean; error?: string }> | { ok: boolean; error?: string };
+  start(
+    url: string,
+  ): Promise<{ ok: boolean; error?: string; response?: string }> | { ok: boolean; error?: string; response?: string };
 }
 
 export interface AppDeps {
@@ -26,6 +35,11 @@ export interface AppDeps {
   commonTestUrl?: string;
   commonBuildUrl?: string;
   orch?: OrchClient;
+  tokens?: Token[];
+  repoAdapter?: {
+    isInitialized?: (dir: string, type: string) => boolean;
+    update: (name: string, version?: string) => void | Promise<void>;
+  };
 }
 
 export function generateRequestId(): string {
@@ -37,6 +51,14 @@ export function createApp(deps: AppDeps): Hono {
   const logger = deps.logger ?? createLogger({ level: "info", name: "watermelon-server-ts" });
 
   app.use("*", async (c, next) => {
+    if (deps.tokens && deps.tokens.length > 0) {
+      // AUTH-01..03: доступ по токенам из конфига.
+      const header = c.req.header("authorization");
+      const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
+      if (!token || !deps.tokens.some((t) => t.value === token)) {
+        return c.json({ error: "unauthorized" }, 401);
+      }
+    }
     const reqId = generateRequestId();
     const reqLogger = logger.child({ req_id: reqId });
     c.set("reqId", reqId);
@@ -48,6 +70,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/health", healthRoutes({ ...deps, startedAt: deps.startedAt ?? Date.now() }));
   app.route("/api/meta", metaRoutes(deps.db));
   app.route("/api/packages", packageRoutes(deps));
+  app.route("/api/repos", repoRoutes(deps));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {

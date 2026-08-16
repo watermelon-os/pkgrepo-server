@@ -16,6 +16,7 @@ export interface MakeAppOptions {
   commonBuildUrl?: string;
   fsRoot?: string;
   orch?: unknown;
+  tokens?: Array<{ value: string; comment?: string; role?: string }>;
 }
 
 export interface TestContext {
@@ -56,11 +57,14 @@ export function memoryLogger(level: LogLevel = "debug"): { logger: Logger; lines
 export function json(
   app: ReturnType<typeof makeApp>["app"],
   url: string,
-  init: { method?: string; body?: unknown } = {},
+  init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
 ) {
   return app.request(url, {
     method: init.method ?? "GET",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
 }

@@ -137,4 +137,69 @@ describe("testing a package", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // TST-07. Ответ запуска сохраняется в журнал; id через шаблонизатор url
+  it("подставляет id в шаблонизированный url запуска и сохраняет ответ запуска в журнал", async () => {
+    const started: string[] = [];
+    const { app } = makeApp({
+      commonTestUrl: "http://node/test/{id}",
+      orch: {
+        start: (url: string) => {
+          started.push(url);
+          return { ok: true, response: "http://proc/1234" };
+        },
+      },
+    });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0" },
+    });
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0/test", {
+      method: "POST",
+      body: { testUrl: "http://node/test/{id}" },
+    });
+    expect(res.status).toBe(202);
+    const { id } = (await res.json()) as { id: string };
+
+    // id подставлен в url запуска
+    expect(started[0]).toBe(`http://node/test/${id}`);
+
+    const journal = await json(app, "/api/packages/nginx/versions/1.0.0/test/log");
+    const body = (await journal.json()) as {
+      entries: Array<{ id: string; status: string; body?: string }>;
+    };
+    expect(body.entries[0]!.body).toBe("http://proc/1234");
+  });
+
+  // CBK-01. Результат из переменных url колбэка; body как есть
+  it("принимает результат через переменную url колбэка и сохраняет body как есть", async () => {
+    const { app } = makeApp({ commonTestUrl: "http://node/test" });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0" },
+    });
+    const start = await json(app, "/api/packages/nginx/versions/1.0.0/test", {
+      method: "POST",
+      body: { testUrl: "http://node/test" },
+    });
+    const { id } = (await start.json()) as { id: string };
+
+    // результат в переменной url шаблона, body — plain text
+    const cb = await app.request(
+      `/api/packages/nginx/versions/1.0.0/test/${id}/callback?result=ok`,
+      {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "see https://example.com/report",
+      },
+    );
+    expect(cb.status).toBe(200);
+
+    const journal = await json(app, "/api/packages/nginx/versions/1.0.0/test/log");
+    const body = (await journal.json()) as {
+      entries: Array<{ id: string; status: string; body?: string }>;
+    };
+    expect(body.entries[0]!.status).toBe("ok");
+    expect(body.entries[0]!.body).toBe("see https://example.com/report");
+  });
 });

@@ -1,8 +1,29 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { resolve, join } from "node:path";
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { describe, it, expect } from "vitest";
+import * as schema from "../src/db/schema.js";
+import { packages, versions } from "../src/db/schema.js";
 import { makeApp, json } from "./helpers.js";
+
+function rpmRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
+  mkdirSync(join(dir, "repodata"), { recursive: true });
+  return dir;
+}
+
+async function createRepo(app: ReturnType<typeof makeApp>["app"]): Promise<string> {
+  const path = rpmRepo();
+  const res = await json(app, "/api/repos", {
+    method: "POST",
+    body: { name: "a", path, type: "rpm" },
+  });
+  expect(res.status).toBe(201);
+  return path;
+}
 
 describe("packages API", () => {
   // ADD-02 — пакет-фантом при добавлении имени без файла
@@ -24,11 +45,11 @@ describe("packages API", () => {
 
   // ADD-01 — пакет сразу с первой версией при добавлении с файлом
   it("создаёт пакет сразу с первой версией при добавлении с файлом", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    const { app } = makeApp({ fsRoot });
+    const { app } = makeApp();
+    await createRepo(app);
     const res = await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", file: "artifact" },
+      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "artifact" },
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
@@ -84,11 +105,11 @@ describe("packages API", () => {
 
   // UPD-01 — перезапись при разной хэшсумме, возвращается варнинг
   it("перезаписывает файл и возвращает варнинг при разной хэшсумме", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    const { app } = makeApp({ fsRoot });
+    const { app } = makeApp();
+    await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", file: "old" },
+      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "old" },
     });
     const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
       method: "PUT",
@@ -101,11 +122,11 @@ describe("packages API", () => {
 
   // UPD-04 — полное совпадение параметров — ошибка
   it("отклоняет обновление при полном совпадении параметров", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    const { app } = makeApp({ fsRoot });
+    const { app } = makeApp();
+    await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", file: "same" },
+      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "same" },
     });
     const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
       method: "PUT",
@@ -115,10 +136,10 @@ describe("packages API", () => {
   });
 
   // UPD-03. Ленивое обновление индекса
-  it("находит файл на диске при ленивом обновлении индекса", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    writeFileSync(join(fsRoot, "nginx-1.0.0.rpm"), "artifact");
-    const { app } = makeApp({ fsRoot });
+  it("находит файл в репозитории при ленивом обновлении индекса", async () => {
+    const { app } = makeApp();
+    const path = await createRepo(app);
+    writeFileSync(join(path, "nginx-1.0.0.rpm"), "artifact");
     const res = await json(app, "/api/packages/nginx/versions/1.0.0", { method: "PUT", body: {} });
     expect(res.status).toBe(200);
     const got = await json(app, "/api/packages/nginx");
@@ -127,30 +148,82 @@ describe("packages API", () => {
   });
 
   it("ошибка при ленивом обновлении, если файл не найден", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    const { app } = makeApp({ fsRoot });
+    const { app } = makeApp();
+    await createRepo(app);
     const res = await json(app, "/api/packages/nginx/versions/1.0.0", { method: "PUT", body: {} });
     expect(res.status).toBe(404);
   });
 
   // UPD-05. Сбой записи файла
   it("не фиксирует операцию при сбое записи файла", async () => {
-    const { app } = makeApp({ fsRoot: "/proc/definitely/not/writable" });
+    const { app } = makeApp();
+    await createRepo(app);
     await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0", { method: "PUT", body: {} });
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
+      method: "PUT",
+      body: { file: "new" },
+    });
     expect(res.status).not.toBe(200);
+  });
+
+  // ATOM-01. Компенсация при сбое записи в бд
+  // - Дано: шаг с фс удался (файл записан в репозиторий)
+  // - Когда: запись в бд не проходит
+  // - Тогда: записанное удаляется (компенсация), операция возвращает ошибку
+  it("удаляет записанный файл при сбое записи в бд", async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "wm-test-"));
+    mkdirSync(join(repoPath, "repodata"), { recursive: true });
+    const artifact = join(repoPath, "nginx-1.0.0.rpm");
+
+    const sqlite = new Database(":memory:");
+    const db = drizzle(sqlite, { schema });
+    migrate(db, { migrationsFolder: resolve(import.meta.dirname, "../drizzle") });
+    const failingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "insert") {
+          return (table: unknown) => {
+            if (table === versions) {
+              return {
+                values: () => ({
+                  run: () => {
+                    throw new Error("db down");
+                  },
+                }),
+              } as never;
+            }
+            return Reflect.get(target, prop, receiver).call(target, table as never);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as never;
+
+    const { app } = makeApp({ db: failingDb } as never);
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path: repoPath, type: "rpm" },
+    });
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "content" },
+    });
+    expect(res.status).toBe(500);
+    expect(existsSync(artifact)).toBe(false);
   });
 
   // DEL-01. Удаление всего, что связано
   it("удаляет пакет целиком", async () => {
-    const fsRoot = mkdtempSync(join(tmpdir(), "wm-test-"));
-    const { app } = makeApp({ fsRoot });
+    const { app } = makeApp();
+    const path = await createRepo(app);
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", file: "artifact" },
+      body: { name: "nginx", version: "1.0.0", repositories: ["a"], file: "artifact" },
     });
+    expect(existsSync(join(path, "nginx-1.0.0.rpm"))).toBe(true);
     const res = await json(app, "/api/packages/nginx", { method: "DELETE" });
     expect(res.status).toBe(204);
     expect((await json(app, "/api/packages/nginx")).status).toBe(404);
+    expect(existsSync(join(path, "nginx-1.0.0.rpm"))).toBe(false);
   });
 });
