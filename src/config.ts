@@ -11,6 +11,12 @@ const envSchema = z.object({
   SERVER_PORT: z.coerce.number().int().positive().max(65535).default(34817),
   DATABASE_PATH: z.string().min(1).default("data/watermelon.db"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  USE_PACKAGE_UTILITIES: z
+    .preprocess(
+      (value) => (value === undefined ? undefined : String(value).toLowerCase()),
+      z.enum(["true", "false", "1", "0"]).default("true"),
+    )
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type Config = z.infer<typeof envSchema>;

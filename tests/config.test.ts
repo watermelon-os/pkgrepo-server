@@ -52,4 +52,16 @@ describe("server configuration", () => {
     const cfg = loadConfig({} as never, "/tmp");
     expect(cfg).toBeTruthy();
   });
+
+  it("использование утилит пакетной системы включено по умолчанию", () => {
+    delete process.env.USE_PACKAGE_UTILITIES;
+    const cfg = loadConfig({} as never, "/tmp");
+    expect(cfg.USE_PACKAGE_UTILITIES).toBe(true);
+  });
+
+  it("выключает использование утилит в конфиге", () => {
+    delete process.env.USE_PACKAGE_UTILITIES;
+    const cfg = loadConfig({ USE_PACKAGE_UTILITIES: "false" } as never, "/tmp");
+    expect(cfg.USE_PACKAGE_UTILITIES).toBe(false);
+  });
 });

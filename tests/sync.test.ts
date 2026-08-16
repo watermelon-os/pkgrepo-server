@@ -22,7 +22,7 @@ describe("synchronization with fs", () => {
       body: { name: "a", path, type: "rpm" },
     });
 
-    writeFileSync(join(path, "nginx-1.0.0.rpm"), "content");
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "content");
 
     const res = await json(app, "/api/packages/sync", { method: "POST" });
     expect(res.status).toBe(200);
@@ -32,11 +32,11 @@ describe("synchronization with fs", () => {
       packages: Array<{ name: string; versions: Array<{ version: string }> }>;
     };
     expect(body.packages[0]!.name).toBe("nginx");
-    expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0");
+    expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
   });
 
-  // - Тогда: разбор имени файла выполняется по шаблону из конфига (например `{name}-{version}.rpm`)
-  it("разбирает имя файла по шаблону name-version", async () => {
+  // - Тогда: разбор артефакта выполняется по шаблону (например `{name}-{version}-{release}.{arch}.rpm`)
+  it("разбирает имя файла по шаблону name-version-release.arch", async () => {
     const path = rpmRepo();
     const { app } = makeApp();
     await json(app, "/api/repos", {
@@ -44,14 +44,14 @@ describe("synchronization with fs", () => {
       body: { name: "a", path, type: "rpm" },
     });
 
-    writeFileSync(join(path, "nginx-1.0.0.rpm"), "content");
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "content");
     await json(app, "/api/packages/sync", { method: "POST" });
 
     const got = await json(app, "/api/packages?name=nginx");
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ version: string }> }>;
     };
-    expect(body.packages[0]!.versions[0]!.version).toBe("1.0.0");
+    expect(body.packages[0]!.versions[0]!.version).toBe("1.0.0-1.x86_64");
   });
 
   // - Тогда: неразбираемое имя файла только логируется, ошибкой не становится
@@ -78,7 +78,7 @@ describe("synchronization with fs", () => {
       body: { name: "a", path, type: "rpm" },
     });
 
-    writeFileSync(join(path, "nginx-1.0.0.rpm"), "content");
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "content");
     await json(app, "/api/packages/sync", { method: "POST" });
     await json(app, "/api/packages/sync", { method: "POST" });
 
@@ -86,7 +86,7 @@ describe("synchronization with fs", () => {
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ version: string }> }>;
     };
-    expect(body.packages[0]!.versions.filter((v) => v.version === "1.0.0")).toHaveLength(1);
+    expect(body.packages[0]!.versions.filter((v) => v.version === "1.0.0-1.x86_64")).toHaveLength(1);
   });
 
   // Файл, исчезнувший с диска, не удаляет запись (ATOM-консерватизм)
@@ -98,16 +98,16 @@ describe("synchronization with fs", () => {
       body: { name: "a", path, type: "rpm" },
     });
 
-    writeFileSync(join(path, "nginx-1.0.0.rpm"), "content");
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "content");
     await json(app, "/api/packages/sync", { method: "POST" });
 
-    await import("node:fs").then((fs) => fs.rmSync(join(path, "nginx-1.0.0.rpm")));
+    await import("node:fs").then((fs) => fs.rmSync(join(path, "nginx-1.0.0-1.x86_64.rpm")));
     await json(app, "/api/packages/sync", { method: "POST" });
 
     const got = await json(app, "/api/packages?name=nginx");
     const body = (await got.json()) as {
       packages: Array<{ versions: Array<{ version: string }> }>;
     };
-    expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0");
+    expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
   });
 });

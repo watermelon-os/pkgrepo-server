@@ -4,6 +4,7 @@ import { loadConfig, loadDotEnv } from "./config.js";
 import { openDb } from "./db/index.js";
 import { runMigrations } from "./db/migrate.js";
 import { createLogger } from "./logger.js";
+import { createRepoAdapter } from "./repoAdapter.js";
 import { readVersion } from "./version.js";
 
 async function main(): Promise<void> {
@@ -15,7 +16,8 @@ async function main(): Promise<void> {
   const { db, sqlite } = await openDb(config.DATABASE_PATH);
 
   const version = await readVersion();
-  const app = createApp({ db, version, logger });
+  const repoAdapter = createRepoAdapter({ useUtilities: config.USE_PACKAGE_UTILITIES, logger });
+  const app = createApp({ db, version, logger, repoAdapter });
 
   serve(
     { fetch: app.fetch, hostname: config.SERVER_HOST, port: config.SERVER_PORT },

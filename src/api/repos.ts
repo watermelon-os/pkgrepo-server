@@ -1,11 +1,11 @@
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono } from "hono";
 import type { DatabaseClient } from "../db/index.js";
 import { packages, repositories } from "../db/schema.js";
 import { createLogger, type Logger } from "../logger.js";
+import { isRepoInitialized } from "../repoAdapter.js";
 
 export interface ReposApiDeps {
   db: DatabaseClient;
@@ -17,18 +17,6 @@ const createdBodySchema = z.object({
   path: z.string().min(1),
   type: z.enum(["rpm", "deb"]),
 });
-
-function isInitializedRepo(dir: string, type: "rpm" | "deb"): boolean {
-  try {
-    if (type === "rpm") {
-      return statSync(join(dir, "repodata")).isDirectory();
-    }
-    // deb: маркеры формата — Packages или Release
-    return existsSync(join(dir, "Packages")) || existsSync(join(dir, "Release"));
-  } catch {
-    return false;
-  }
-}
 
 export function repoRoutes(deps: ReposApiDeps): Hono {
   const db = deps.db;
@@ -55,7 +43,7 @@ export function repoRoutes(deps: ReposApiDeps): Hono {
       // REP-02: путь не существует — ошибка.
       return c.json({ error: "repository_path_not_found" }, 400);
     }
-    if (!isInitializedRepo(body.path, body.type)) {
+    if (!isRepoInitialized(body.path, body.type)) {
       // REP-03: не проинициализирована — нет маркеров типа.
       return c.json({ error: "repository_not_initialized" }, 400);
     }

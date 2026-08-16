@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono, type Context } from "hono";
+import {
+  artifactFileName as buildArtifactFileName,
+  defaultArtifactTemplates,
+} from "../artifacts.js";
+import { createRepoAdapter, type ParsedArtifact, type RepoAdapter } from "../repoAdapter.js";
 import type { OrchClient, Token } from "../app.js";
 import type { DatabaseClient } from "../db/index.js";
 import {
@@ -16,11 +21,6 @@ import {
   versions,
 } from "../db/schema.js";
 import { createLogger, type Logger } from "../logger.js";
-
-export interface RepoAdapter {
-  isInitialized?: (dir: string, type: string) => boolean;
-  update: (name: string, version?: string) => void | Promise<void>;
-}
 
 export interface PackageApiDeps {
   db: DatabaseClient;
@@ -73,32 +73,15 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/** Имя файла для размещения в репозитории по шаблону пакетной системы типа. */
 function artifactFileName(name: string, version: string, type: string): string {
-  const ext = type === "deb" ? "deb" : "rpm";
-  return `${name}-${version}.${ext}`;
+  const template = defaultArtifactTemplates[type] ?? defaultArtifactTemplates.rpm!;
+  return buildArtifactFileName(name, version, template);
 }
 
 function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`.*${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}.*`);
-}
-
-/** Разбор имени файла по шаблону `{name}-{version}.{ext}`: версия — сегмент после последнего `-`. */
-function parseArtifactName(
-  fileName: string,
-  type: string,
-): { name: string; version: string } | undefined {
-  const ext = `.${type === "deb" ? "deb" : "rpm"}`;
-  if (!fileName.endsWith(ext)) return undefined;
-  const base = fileName.slice(0, -ext.length);
-  const idx = base.lastIndexOf("-");
-  if (idx <= 0) return undefined;
-  const name = base.slice(0, idx);
-  const version = base.slice(idx + 1);
-  if (!nameSchema.safeParse(name).success || !versionSchema.safeParse(version).success) {
-    return undefined;
-  }
-  return { name, version };
 }
 
 function repositoryByIdentity(db: DatabaseClient, name: string) {
@@ -263,7 +246,9 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   const logger = deps.logger ?? createLogger({ level: "info" });
   const orch: OrchClient =
     deps.orch ?? { start: async () => ({ ok: true, error: undefined, response: undefined }) };
-  const adapter = deps.repoAdapter;
+  // По умолчанию утилиты не используются — детерминированное поведение в тестах;
+  // продакшн передает адаптер из конфига (index.ts).
+  const adapter: RepoAdapter = deps.repoAdapter ?? createRepoAdapter({ useUtilities: false, logger });
 
   const app = new Hono();
 
@@ -281,8 +266,12 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         continue;
       }
       for (const file of files) {
-        const parsed = parseArtifactName(file, repo.type);
-        if (!parsed) continue; // неразбираемое имя — только пропускаем
+        const parsed = await adapter.inspect(repo.type, join(repo.path, file));
+        if (!parsed) {
+          // неразбираемое имя файла — только логируется, ошибкой не становится
+          logger.warn("sync: cannot parse artifact", { req_id: reqId, repo: repo.name, file });
+          continue;
+        }
         const { name, version } = parsed;
         let pkg = db.select().from(packages).where(eq(packages.name, name)).get();
         if (!pkg) {

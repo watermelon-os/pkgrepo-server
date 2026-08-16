@@ -6,6 +6,7 @@ import { packageRoutes } from "./api/packages.js";
 import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
 import { createLogger, type Logger } from "./logger.js";
+import type { RepoAdapter } from "./repoAdapter.js";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -36,10 +37,7 @@ export interface AppDeps {
   commonBuildUrl?: string;
   orch?: OrchClient;
   tokens?: Token[];
-  repoAdapter?: {
-    isInitialized?: (dir: string, type: string) => boolean;
-    update: (name: string, version?: string) => void | Promise<void>;
-  };
+  repoAdapter?: RepoAdapter;
 }
 
 export function generateRequestId(): string {
