@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { packages, repositories, versions } from "../../db/schema.js";
@@ -6,6 +7,14 @@ import { createLogger } from "../../logger.js";
 import type { PackageApiDeps } from "./deps.js";
 import { resolveAdapter } from "./deps.js";
 import { artifactFileName, sha256 } from "./artifacts.js";
+import { defaultArtifactTemplates } from "../../artifacts.js";
+
+/** Индексные файлы репозитория — не артефакты пакетов, в синке пропускаются. */
+function isRepoIndexFile(type: string, file: string): boolean {
+  if (file === "Packages" || file === "Release") return type === "deb";
+  if (type === "pacman" && (file.endsWith(".db") || file.endsWith(".db.tar.gz"))) return true;
+  return false;
+}
 
 /**
  * Сканирование репозиториев и подхват артефактов, появившихся на диске вне API (SVR-03).
@@ -21,13 +30,25 @@ export async function runSync(
   const repos = db.select().from(repositories).all();
   let picked = 0;
   for (const repo of repos) {
-    let files: string[] = [];
+    let entries: Dirent[] = [];
     try {
-      files = await readdir(repo.path);
+      entries = await readdir(repo.path, { withFileTypes: true });
     } catch {
       logger.warn("sync: cannot read repository", { req_id: reqId, repo: repo.name });
       continue;
     }
+    // Только файлы; каталоги (repodata и т.п.), индексные файлы и файлы
+    // чужих расширений — не кандидаты (SVR-03).
+    const extension = defaultArtifactTemplates[repo.type]?.extension;
+    const files = entries
+      .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+      .map((entry) => entry.name)
+      .filter(
+        (file) =>
+          extension !== undefined &&
+          file.endsWith(extension) &&
+          !isRepoIndexFile(repo.type, file),
+      );
     for (const file of files) {
       const parsed = await adapter.inspect(repo.type, join(repo.path, file));
       if (!parsed) {

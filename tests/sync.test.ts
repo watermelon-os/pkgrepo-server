@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { makeApp, json } from "./helpers.js";
+import { makeApp, json, memoryLogger } from "./helpers.js";
 
 function rpmRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
@@ -54,6 +54,29 @@ describe("synchronization with fs", () => {
     expect(body.packages[0]!.versions[0]!.version).toBe("1.0.0-1.x86_64");
   });
 
+  // - Тогда: сканируются только файлы с расширением, характерным для типа репозитория;
+  //   файлы иных расширений игнорируются
+  it("игнорирует файлы чужих расширений", async () => {
+    const path = rpmRepo();
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    writeFileSync(join(path, "notes.txt"), "content");
+    writeFileSync(join(path, "README.md"), "content");
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { picked: number }).picked).toBe(0);
+    expect(lines.join("\n")).not.toContain("cannot parse artifact");
+
+    const got = await json(app, "/api/packages");
+    expect(((await got.json()) as { packages: unknown[] }).packages).toEqual([]);
+  });
+
   // - Тогда: неразбираемое имя файла только логируется, ошибкой не становится
   it("логирует неразбираемое имя, но не падает", async () => {
     const path = rpmRepo();
@@ -63,10 +86,37 @@ describe("synchronization with fs", () => {
       body: { name: "a", path, type: "rpm" },
     });
 
-    writeFileSync(join(path, "not-a-package.txt"), "content");
+    writeFileSync(join(path, "not-a-package.rpm"), "content");
 
     const res = await json(app, "/api/packages/sync", { method: "POST" });
     expect(res.status).toBe(200);
+  });
+
+  // Каталог индекса (repodata) и индексные файлы (Packages/Release) — не артефакты.
+  it("пропускает индекс репозитория и не шумит в лог", async () => {
+    const rpmDir = rpmRepo();
+    const debDir = mkdtempSync(join(tmpdir(), "wm-test-"));
+    writeFileSync(join(debDir, "Packages"), "Package: whatever\n");
+    writeFileSync(join(debDir, "Release"), "Origin: test\n");
+
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "r", path: rpmDir, type: "rpm" },
+    });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "d", path: debDir, type: "deb" },
+    });
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { picked: number }).picked).toBe(0);
+    expect(lines.join("\n")).not.toContain("cannot parse artifact");
+
+    const got = await json(app, "/api/packages");
+    expect(((await got.json()) as { packages: unknown[] }).packages).toEqual([]);
   });
 
   // - Тогда: повторный скан идемпотентен — дубликатов не появляется
