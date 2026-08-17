@@ -102,7 +102,7 @@ export async function writeFileToRepos(
   pkg: { repositories: string[] },
   name: string,
   version: string,
-  content: string,
+  content: Uint8Array,
   adapter?: RepoAdapter,
 ): Promise<void> {
   for (const repo of reposOf(db, pkg)) {
@@ -127,7 +127,7 @@ export async function writeArtifactToRepos(
   pkg: { repositories: string[] },
   name: string,
   version: string,
-  content: string,
+  content: Uint8Array,
   adapter: RepoAdapter,
   resolveName = false,
 ): Promise<ParsedArtifact> {

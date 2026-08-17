@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { OrchClient } from "../app.js";
 import { buildJournal, packages, repositories, testJournal, versions } from "../db/schema.js";
 import { createLogger } from "../logger.js";
@@ -43,6 +43,25 @@ export { runSync, type PackageApiDeps };
 function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`.*${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}.*`);
+}
+
+// PRS-07: бинарная загрузка — файл в теле запроса, метаданные (name/version/
+// repositories/resolveName) — в query. Детекция: тело считается бинарным для
+// любого content-type, кроме явного application/json (Rext может не ставить
+// octet-stream для @body).
+function isJsonRequest(c: Context): boolean {
+  return (c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json");
+}
+
+function queryBool(v: string | undefined): boolean | undefined {
+  if (v === undefined) return undefined;
+  return v === "true" || v === "1";
+}
+
+function queryRepositories(v: string | undefined): string[] | undefined {
+  if (v === undefined) return undefined;
+  const list = v.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  return list.length === 0 ? undefined : list;
 }
 
 export function packageRoutes(deps: PackageApiDeps): Hono {
@@ -101,8 +120,23 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   app.post("/", async (c) => {
     const reqId = c.get("reqId");
     let body: z.infer<typeof createBodySchema>;
+    let file: Uint8Array | undefined;
     try {
-      body = createBodySchema.parse(await c.req.json());
+      if (isJsonRequest(c)) {
+        body = createBodySchema.parse(await c.req.json());
+        if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
+      } else {
+        // PRS-07: файл — бинарное тело запроса; метаданные — в query.
+        file = new Uint8Array(await c.req.arrayBuffer());
+        body = createBodySchema.parse({
+          name: c.req.query("name") ?? "",
+          version: c.req.query("version") ?? undefined,
+          repositories: queryRepositories(c.req.query("repositories")),
+          resolveName: queryBool(c.req.query("resolveName")),
+          testUrl: c.req.query("testUrl") ?? undefined,
+          buildUrl: c.req.query("buildUrl") ?? undefined,
+        });
+      }
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
@@ -111,7 +145,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       // ADD-04: фантом при существующем пакете — ошибка.
       return c.json({ error: "package_exists" }, 409);
     }
-    if (body.file !== undefined) {
+    if (file !== undefined) {
       // MOV-06: размещение обязательно при добавлении файла.
       if (!body.repositories || body.repositories.length === 0) {
         return c.json({ error: "no_repositories" }, 400);
@@ -136,7 +170,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
 
     const pkg = getPackage(db, body.name)!;
     let effectivePkg: typeof pkg = pkg;
-    if (body.file !== undefined) {
+    if (file !== undefined) {
       // Атомарность: сначала фс, потом бд; при сбое бд — компенсация.
       let derived;
       try {
@@ -145,7 +179,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           pkg,
           body.name,
           body.version ?? "",
-          body.file,
+          file,
           adapter,
           body.resolveName === true,
         );
@@ -164,7 +198,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           .values({
             packageName: derived.name,
             version: derived.version,
-            sha256: sha256(body.file),
+            sha256: sha256(file),
             createdAt: now,
           })
           .run();
@@ -193,14 +227,25 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     const name = c.req.param("name");
     if (!nameSchema.safeParse(name).success) return c.json({ error: "invalid_request" }, 400);
     let body: z.infer<typeof versionBodySchema>;
+    let file: Uint8Array | undefined;
     try {
-      body = versionBodySchema.parse(await c.req.json());
+      if (isJsonRequest(c)) {
+        body = versionBodySchema.parse(await c.req.json());
+        if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
+      } else {
+        // PRS-07: файл — бинарное тело запроса; версия/флаги — в query.
+        file = new Uint8Array(await c.req.arrayBuffer());
+        body = versionBodySchema.parse({
+          version: c.req.query("version") ?? "",
+          resolveName: queryBool(c.req.query("resolveName")),
+        });
+      }
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
     const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
-    if (body.file !== undefined && pkg.repositories.length === 0) {
+    if (file !== undefined && pkg.repositories.length === 0) {
       // MOV-06: файлу негде жить.
       return c.json({ error: "no_repositories" }, 400);
     }
@@ -212,7 +257,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (dup) return c.json({ error: "version_exists" }, 409);
 
     const now = new Date();
-    if (body.file !== undefined) {
+    if (file !== undefined) {
       let derived;
       try {
         derived = await writeArtifactToRepos(
@@ -220,7 +265,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           pkg,
           name,
           body.version,
-          body.file,
+          file,
           adapter,
           body.resolveName === true,
         );
@@ -246,7 +291,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         .values({
           packageName: derived.name,
           version: derived.version,
-          sha256: sha256(body.file),
+          sha256: sha256(file),
           createdAt: now,
         })
         .run();
@@ -330,7 +375,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           for (const repo of reposOf(db, fresh)) {
             const target = join(repo.path, artifactFileName(name, row.version, repo.type));
             try {
-              return await import("node:fs/promises").then((m) => m.readFile(target, "utf8"));
+              return await import("node:fs/promises").then((m) => m.readFile(target));
             } catch {
               // not in this repo
             }
@@ -368,8 +413,18 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       return c.json({ error: "invalid_request" }, 400);
     }
     let body: z.infer<typeof versionUpdateBodySchema>;
+    let file: Uint8Array | undefined;
     try {
-      body = versionUpdateBodySchema.parse(await c.req.json());
+      if (isJsonRequest(c)) {
+        body = versionUpdateBodySchema.parse(await c.req.json());
+        if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
+      } else {
+        // PRS-07: файл — бинарное тело запроса; resolveName — в query.
+        file = new Uint8Array(await c.req.arrayBuffer());
+        body = versionUpdateBodySchema.parse({
+          resolveName: queryBool(c.req.query("resolveName")),
+        });
+      }
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
@@ -403,7 +458,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         .values({
           packageName: name,
           version,
-          sha256: body.file !== undefined ? sha256(body.file) : "",
+          sha256: file !== undefined ? sha256(file) : "",
           createdAt: now,
         })
         .run();
@@ -427,22 +482,22 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         .values({
           packageName: name,
           version,
-          sha256: body.file !== undefined ? sha256(body.file) : "",
+          sha256: file !== undefined ? sha256(file) : "",
           createdAt: now,
         })
         .run();
-      if (body.file !== undefined) {
-        await writeFileToRepos(db, pkg, name, version, body.file, adapter);
+      if (file !== undefined) {
+        await writeFileToRepos(db, pkg, name, version, file, adapter);
       }
       return c.json(buildPackageResponse(deps, pkg));
     }
 
-    if (body.file === undefined) {
+    if (file === undefined) {
       // Нет файла — обновляем только поля (UPD-02). Других полей нет.
       return c.json(buildPackageResponse(deps, pkg));
     }
 
-    const newHash = sha256(body.file);
+    const newHash = sha256(file);
     // UPD-04: полное совпадение параметров — ошибка.
     if (row.sha256 === newHash) {
       return c.json({ error: "no_changes" }, 409);
@@ -455,7 +510,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         pkg,
         name,
         version,
-        body.file,
+        file,
         adapter,
         body.resolveName === true,
       );

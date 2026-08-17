@@ -68,3 +68,19 @@ export function json(
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
 }
+
+/** PRS-07: бинарная загрузка — body = байты файла, метаданные — в query. */
+export function binary(
+  app: ReturnType<typeof makeApp>["app"],
+  url: string,
+  init: { method?: string; body?: Uint8Array; headers?: Record<string, string> } = {},
+) {
+  return app.request(url, {
+    method: init.method ?? "POST",
+    headers: {
+      "content-type": "application/octet-stream",
+      ...(init.headers ?? {}),
+    },
+    body: init.body,
+  });
+}

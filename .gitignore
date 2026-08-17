@@ -9,6 +9,9 @@ data/
 *.tsbuildinfo
 coverage/
 
+# .http files for testing api
+.api-requests/
+
 # Emacs and Org-mode temporary files
 .\#*
 \#*#

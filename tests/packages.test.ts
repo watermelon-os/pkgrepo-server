@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import Database from "better-sqlite3";
@@ -7,7 +7,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { describe, it, expect } from "vitest";
 import * as schema from "../src/db/schema.js";
 import { packages, versions } from "../src/db/schema.js";
-import { makeApp, json } from "./helpers.js";
+import { makeApp, json, binary } from "./helpers.js";
 
 function rpmRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
@@ -358,5 +358,107 @@ describe("PRS-07 resolveName", () => {
     const got = await json(app, "/api/packages/nginx");
     const body = (await got.json()) as { versions: Array<{ version: string }> };
     expect(body.versions.map((v) => v.version)).toEqual(["9.9.9-1.x86_64"]);
+  });
+});
+
+// PRS-07: бинарная загрузка — файл в теле запроса (Content-Type: application/octet-stream),
+// имя/версия/repositories/resolveName — в query. JSON-формат (file-строка) остаётся.
+describe("PRS-07 бинарная загрузка (octet-stream + query)", () => {
+  it("создаёт пакет из бинарного тела с метаданными в query", async () => {
+    const { app } = makeApp();
+    const path = await createRepo(app);
+    const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x01, 0x02, 0xff]);
+    const res = await binary(
+      app,
+      "/api/packages?name=nginx&version=1.0.0-1.x86_64&repositories=a",
+      { method: "POST", body: bytes },
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
+    expect(body.name).toBe("nginx");
+    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64"]);
+    expect(readFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm")).equals(bytes)).toBe(true);
+  });
+
+  it("добавляет версию из бинарного тела (query: version)", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await json(app, "/api/packages", { method: "POST", body: { name: "nginx", repositories: ["a"] } });
+    const res = await binary(app, "/api/packages/nginx/versions?version=2.0.0-1.x86_64", {
+      method: "POST",
+      body: Buffer.from("v2"),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { versions: Array<{ version: string }> };
+    expect(body.versions.map((v) => v.version)).toEqual(["2.0.0-1.x86_64"]);
+  });
+
+  it("перезаписывает файл бинарным телом (PUT + query)", async () => {
+    const { app } = makeApp();
+    const path = await createRepo(app);
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "old" },
+    });
+    const res = await binary(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
+      method: "PUT",
+      body: Buffer.from("new-bytes"),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ warning: true });
+    expect(readFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm")).equals(Buffer.from("new-bytes"))).toBe(true);
+  });
+
+  it("resolveName через query размещает файл под фактическим именем", async () => {
+    const path = mkdtempSync(join(tmpdir(), "wm-test-"));
+    mkdirSync(join(path, "repodata"), { recursive: true });
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "httpd", version: "2.4.62-1.el9.x86_64" }),
+        update: async () => {},
+      },
+    } as never);
+    await json(app, "/api/repos", { method: "POST", body: { name: "a", path, type: "rpm" } });
+    const res = await binary(
+      app,
+      "/api/packages?name=nginx&repositories=a&resolveName=true",
+      { method: "POST", body: Buffer.from("bytes") },
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
+    expect(body.name).toBe("httpd");
+    expect(body.versions.map((v) => v.version)).toEqual(["2.4.62-1.el9.x86_64"]);
+  });
+
+  it("принимает бинарное тело и без content-type (как Rext @body)", async () => {
+    const { app } = makeApp();
+    const path = await createRepo(app);
+    const res = await app.request("/api/packages?name=nginx&version=1.0.0-1.x86_64&repositories=a", {
+      method: "POST",
+      body: Buffer.from("no-ct"),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { versions: Array<{ version: string }> };
+    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64"]);
+    expect(readFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm")).equals(Buffer.from("no-ct"))).toBe(true);
+  });
+
+  it("отклоняет бинарный запрос без обязательных метаданных в query", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    const res = await binary(app, "/api/packages", { method: "POST", body: Buffer.from("x") });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_request" });
+  });
+
+  it("отклоняет бинарный запрос с несуществующим репозиторием", async () => {
+    const { app } = makeApp();
+    const res = await binary(
+      app,
+      "/api/packages?name=nginx&version=1.0.0&repositories=missing",
+      { method: "POST", body: Buffer.from("x") },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "repository_not_found" });
   });
 });
