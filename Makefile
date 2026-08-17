@@ -5,32 +5,27 @@ NAMEVER = $(NAME)-$(VERSION)
 TOOL_DIR = tools/$(NAME)
 
 RPMBUILD_DIR = .rpmbuild
+BUILD_DIR = .build/$(NAME)
+RELEASE_BIN = $(BUILD_DIR)/$(NAME)-release
+
+include ../common/fhs.mk
 
 
-# Блок GNU-переменных установки (стандарт autoconf/GNU make, они же — соглашения FHS).
-# Мотивация: пользователь/сборщик пакета может переопределить любую из них стандартным
-# способом (make install prefix=/usr), не читая Makefile. Иерархия производных друг от
-# друга (exec_prefix<-prefix, bindir<-exec_prefix, ...) повторяет общепринятую схему.
-# ВАЖНО: комментарии пишем только на отдельных строках — inline-комментарий после значения
-# make вырезает, но оставляет пробелы перед ним, и пути ломаются («/usr/local   /bin»).
-# prefix — корень установки по умолчанию.
-prefix      = /usr/local
-# exec_prefix — = prefix, если нет особой раскладки архитектурно-зависимых файлов.
-exec_prefix = $(prefix)
-# bindir — исполняемые файлы.
-bindir      = $(exec_prefix)/bin
-# datarootdir — архитектурно-независимые данные.
-datarootdir = $(prefix)/share
-# mandir — man-страницы.
-mandir      = $(datarootdir)/man
-# man1dir — man-страницы раздела 1 (команды).
-man1dir     = $(mandir)/man1
-# docdir — документация именно этой утилиты.
-docdir      = $(datarootdir)/doc/$(NAME)
-# licensdir — лицензия (соглашение Fedora: /usr/share/licenses/<name>).
-licensdir   = $(datarootdir)/licenses/$(NAME)
+# install не зависит от all: при сборке rpm бинарь уже в tar и пересборка не нужна.
+install:
+	install -d $(DESTDIR)$(bindir) $(DESTDIR)$(man1dir) $(DESTDIR)$(docdir) $(DESTDIR)$(licensdir)
+	install -m 755 $(BIN) $(DESTDIR)$(bindir)/$(NAME)
+	install -m 644 $(MAN) $(DESTDIR)$(man1dir)/$(NAME).1
+	install -m 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
 
-# DESTDIR — не объявляется здесь (это не наша переменная), а передаётся извне.
-# Мотивация: стандартный механизм staging-установки — устанавливать не в корень ФС,
-# а в $DESTDIR<путь>, чтобы потом упаковать в rpm/deb/т.п. без прав root.
-# Работает из-за того, что в правилах install пути написаны как $(DESTDIR)$(bindir) и т.д.
+uninstall:
+	rm -f $(DESTDIR)$(bindir)/$(NAME)
+	rm -f $(DESTDIR)$(man1dir)/$(NAME).1
+	rm -f $(DESTDIR)$(licensdir)/LICENSE
+	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) $(DESTDIR)$(docdir)
+
+MKTEMP_TEMP := /tmp/edutoolsdist.XXX
+clean:
+	rm -rf $(BUILD_DIR)
+	rm -rf $(subst XXX,*,$(MKTEMP_TEMP))
+	rm -rf $(RPMBUILD_DIR)/{RPMS/x86_64,SOURCES,SPECS}/$(NAME)*
