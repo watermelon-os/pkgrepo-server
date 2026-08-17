@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono, type Context } from "hono";
-import type { OrchClient } from "../app.js";
+import type { OrchClient } from "../types.js";
 import { buildJournal, packages, repositories, testJournal, versions } from "../db/schema.js";
 import { createLogger } from "../logger.js";
 import type { PackageApiDeps } from "./packages/deps.js";
@@ -20,7 +20,6 @@ import {
   versionUpdateBodySchema,
 } from "./packages/schemas.js";
 import {
-  artifactErrorResponse,
   artifactExistsInRepos,
   ArtifactError,
   artifactFileName,
@@ -37,8 +36,6 @@ import {
 import { buildPackageResponse } from "./packages/response.js";
 import { startBuild, startTest } from "./packages/process.js";
 import { runSync } from "./packages/sync.js";
-
-export { runSync, type PackageApiDeps };
 
 function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
@@ -62,6 +59,16 @@ function queryRepositories(v: string | undefined): string[] | undefined {
   if (v === undefined) return undefined;
   const list = v.split(",").map((s) => s.trim()).filter((s) => s !== "");
   return list.length === 0 ? undefined : list;
+}
+
+/** Ответ для ошибок размещения: код + фактические имя/версия из метаданных. */
+function artifactErrorResponse(c: Context, error: ArtifactError) {
+  return c.json(
+    error.derived
+      ? { error: error.code, name: error.derived.name, version: error.derived.version }
+      : { error: error.code },
+    400,
+  );
 }
 
 export function packageRoutes(deps: PackageApiDeps): Hono {

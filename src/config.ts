@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { loadEnvFile } from "node:process";
 import path from "node:path";
-import type { Token } from "./app.js";
+import type { Token } from "./types.js";
 
 const tokensSchema = z
   .preprocess(

@@ -1,4 +1,4 @@
-import type { OrchClient, Token } from "../../app.js";
+import type { OrchClient, Token } from "../../types.js";
 import type { DatabaseClient } from "../../db/index.js";
 import type { Logger } from "../../logger.js";
 import { createRepoAdapter, type RepoAdapter } from "../../repoAdapter.js";

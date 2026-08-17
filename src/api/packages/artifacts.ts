@@ -4,7 +4,6 @@ import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
-import type { Context } from "hono";
 import {
   artifactFileName as buildArtifactFileName,
   defaultArtifactTemplates,
@@ -81,16 +80,6 @@ export class ArtifactError extends Error {
 
 export function isArtifactError(error: unknown): error is ArtifactError {
   return error instanceof ArtifactError;
-}
-
-/** Ответ для ошибок размещения: код + фактические имя/версия из метаданных. */
-export function artifactErrorResponse(c: Context, error: ArtifactError) {
-  return c.json(
-    error.derived
-      ? { error: error.code, name: error.derived.name, version: error.derived.version }
-      : { error: error.code },
-    400,
-  );
 }
 
 /**

@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { existsSync } from "node:fs";
 import { createApp, generateRequestId } from "./app.js";
-import { runSync } from "./api/packages.js";
+import { runSync } from "./api/packages/sync.js";
 import { loadConfig, loadDotEnv } from "./config.js";
 import { openDb } from "./db/index.js";
 import { runMigrations } from "./db/migrate.js";

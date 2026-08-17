@@ -6,24 +6,13 @@ import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { RepoAdapter } from "./repoAdapter.js";
+import type { Token, OrchClient } from "./types.js";
 
 declare module "hono" {
   interface ContextVariableMap {
     reqId: string;
     logger: Logger;
   }
-}
-
-export interface Token {
-  value: string;
-  comment?: string;
-  role?: string;
-}
-
-export interface OrchClient {
-  start(
-    url: string,
-  ): Promise<{ ok: boolean; error?: string; response?: string }> | { ok: boolean; error?: string; response?: string };
 }
 
 export interface AppDeps {

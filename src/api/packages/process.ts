@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { z } from "zod";
-import type { OrchClient, Token } from "../../app.js";
+import type { OrchClient, Token } from "../../types.js";
 import { buildJournal, testJournal } from "../../db/schema.js";
 import type { PackageApiDeps } from "./deps.js";
 import { runBodySchema } from "./schemas.js";
