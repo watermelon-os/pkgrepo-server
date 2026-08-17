@@ -39,7 +39,7 @@ const envSchema = z.object({
             .toLowerCase()
             .split(",")
             .map((s) => s.trim())
-            .filter(Boolean),
+            .filter((s) => s && ["time", "level", "logger", "msg"].includes(s)),
     z.array(z.enum(["time", "level", "logger", "msg"])).default([]),
   ),
   // Корневой каталог репозиториев; пустой — авто-создание/инициализация выключены.

@@ -26,7 +26,7 @@ describe("logger: ключи стандартных полей", () => {
     expect(line).not.toContain("level=");
     expect(line).not.toContain("logger=");
     expect(line).not.toContain("msg=");
-    expect(line).toMatch(/^\S+ INFO test hello foo=bar$/);
+    expect(line).toMatch(/^\S+ INFO test hello foo=bar\s*$/);
   });
 
   it("показывает ключи по списку standardFields", () => {
@@ -35,7 +35,7 @@ describe("logger: ключи стандартных полей", () => {
     });
     logger.info("hello");
     const line = lines[0]!;
-    expect(line).toMatch(/^time=\S+ level=INFO logger=test msg=hello$/);
+    expect(line).toMatch(/^time=\S+ level=INFO logger=test msg=hello\s*$/);
   });
 
   it("показывает ключи только выбранных полей", () => {

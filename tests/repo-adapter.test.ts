@@ -182,7 +182,7 @@ describe("inspectPackage: фолбэк", () => {
 
 describe("createRepoAdapter", () => {
   it("inspect и update не бросают исключений", async () => {
-    const adapter = createRepoAdapter({ useUtilities: false });
+    const adapter = createRepoAdapter({ useUtilities: false, exec: execReturning("") });
     const got = await adapter.inspect("rpm", "/tmp/nginx-1.24.0-1.el9.x86_64.rpm");
     expect(got).toEqual({ name: "nginx", version: "1.24.0-1.el9.x86_64" });
     await expect(adapter.update("/tmp", "rpm", "nginx", "1.24.0-1.el9.x86_64")).resolves.toBeUndefined();
@@ -190,7 +190,10 @@ describe("createRepoAdapter", () => {
 
   it("генерирует Packages для deb через dpkg-scanpackages", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wm-debgen-"));
-    const adapter = createRepoAdapter({ useUtilities: false });
+    const adapter = createRepoAdapter({
+      useUtilities: false,
+      exec: execReturning("Package: whatever\nVersion: 1.0.0-1_amd64\n"),
+    });
     await adapter.update(dir, "deb", "whatever", "1.0.0-1_amd64");
     expect(existsSync(join(dir, "Packages"))).toBe(true);
   });
@@ -200,7 +203,15 @@ describe("createRepoAdapter", () => {
     const warnings: unknown[] = [];
     const adapter = createRepoAdapter({
       useUtilities: false,
-      logger: { warn: (m: string, d?: unknown) => warnings.push([m, d]) } as never,
+      exec: async () => {
+        throw new Error("ENOENT: no such tool");
+      },
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (m: string, d?: unknown) => warnings.push([m, d]),
+        error: () => {},
+      } as never,
     });
     await adapter.update(dir, "rpm", "nginx", "1.24.0-1.el9.x86_64");
     expect(warnings.length).toBeGreaterThan(0);
