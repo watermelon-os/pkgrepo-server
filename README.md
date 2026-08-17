@@ -9,7 +9,6 @@
 - **Drizzle ORM** — SQLite database access, `drizzle-kit` for migrations
 - **better-sqlite3** — synchronous SQLite driver
 - **Vitest** — unit/integration tests
-- **Commander** — a separate CLI that talks to the server over HTTP
 - Standard `node:fs/promises` and `node:path` for filesystem access
 
 ## Requirements
@@ -49,15 +48,6 @@ npm run build         # tsc -> dist/
 npm start             # node dist/index.js
 ```
 
-## CLI
-
-```sh
-npm run cli -- status          # GET /api/health
-npm run cli -- version         # print package version
-```
-
-After `npm run build`, the CLI is also available as `wmserver-ts`.
-
 ## Layout
 
 ```
@@ -67,7 +57,6 @@ src/
   config.ts        env config (Zod)
   logger.ts        structured logging
   version.ts       reads package.json via node:fs/promises
-  cli.ts           Commander CLI (HTTP client)
   artifacts.ts     artifact filename templates + name parser
   repoAdapter.ts   package-tool inspectors and repo DB generators
   api/             REST endpoints (health, repos, packages) with Zod schemas

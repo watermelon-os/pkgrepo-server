@@ -15,17 +15,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "cli": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest"
-  },
-  "bin": {
-    "wmserver-ts": "dist/cli.js"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
     "better-sqlite3": "^13.0.3",
-    "commander": "^15.0.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.2",
     "zod": "^4.4.3"
