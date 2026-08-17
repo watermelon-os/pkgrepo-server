@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,15 @@ import {
 import { memoryLogger } from "./helpers.js";
 
 const opts = { useUtilities: true };
+
+/** Доступность системной утилиты (для интеграционных тестов). */
+function hasTool(tool: string): boolean {
+  try {
+    return spawnSync("/usr/bin/env", ["sh", "-c", `command -v ${tool}`]).status === 0;
+  } catch {
+    return false;
+  }
+}
 
 function execReturning(stdout: string, code = 0): ExecFn {
   return async () => ({ stdout, code });
@@ -160,13 +169,13 @@ describe("inspectPackage: фолбэк", () => {
   });
 
   // Интеграция: реальная утилита через /usr/bin/env (если есть) + фолбэк.
-  it("интеграция: файл не пакет → фолбэк на парсер имени", async () => {
+  it.skipIf(!hasTool("rpm"))("интеграция: файл не пакет → фолбэк на парсер имени", async () => {
     const file = tempFile("bash-5.2.37-2.x86_64.rpm");
     const got = await inspectPackage("rpm", file, { ...opts });
     expect(got).toEqual({ name: "bash", version: "5.2.37-2.x86_64" });
   });
 
-  it("интеграция: pacman из PKGBUILD исходного архива", async () => {
+  it.skipIf(!hasTool("tar"))("интеграция: pacman из PKGBUILD исходного архива", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wm-pkgbuild-"));
     const pkgDir = join(dir, "fcitx5-ari-ime");
     mkdirSync(pkgDir, { recursive: true });
