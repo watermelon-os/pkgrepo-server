@@ -99,4 +99,29 @@ describe("server configuration", () => {
     const cfg = loadConfig({ LOG_STANDARD_FIELDS: " time,  ,bogus " } as never, "/tmp");
     expect(cfg.LOG_STANDARD_FIELDS).toEqual(["time"]);
   });
+
+  // AUTH: токены объявляются в конфиге (значение, комментарий, роль).
+  it("по умолчанию токенов нет", () => {
+    const cfg = loadConfig({} as never, "/tmp");
+    expect(cfg.TOKENS).toEqual([]);
+  });
+
+  it("парсит токены из JSON-строки", () => {
+    const cfg = loadConfig(
+      { TOKENS: '[{"value":"a","comment":"admin","role":"admin"},{"value":"b","role":"runner"}]' },
+      "/tmp",
+    );
+    expect(cfg.TOKENS).toEqual([
+      { value: "a", comment: "admin", role: "admin" },
+      { value: "b", role: "runner" },
+    ]);
+  });
+
+  it("отклоняет некорректный JSON токенов при старте", () => {
+    expect(() => loadConfig({ TOKENS: "not json" } as never, "/tmp")).toThrow();
+  });
+
+  it("отклоняет токен без значения", () => {
+    expect(() => loadConfig({ TOKENS: '[{"comment":"x"}]' } as never, "/tmp")).toThrow();
+  });
 });

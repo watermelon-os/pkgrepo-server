@@ -51,7 +51,9 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.tokens && deps.tokens.length > 0) {
       // AUTH-01..03: доступ по токенам из конфига.
       const header = c.req.header("authorization");
-      const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
+      const bearer = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
+      // AUTH-04: url колбэка содержит токен раннера — токен может прийти в url (?token=).
+      const token = bearer ?? c.req.query("token");
       if (!token || !deps.tokens.some((t) => t.value === token)) {
         return c.json({ error: "unauthorized" }, 401);
       }

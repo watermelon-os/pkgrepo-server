@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import { z } from "zod";
-import type { OrchClient } from "../../app.js";
+import type { OrchClient, Token } from "../../app.js";
 import { buildJournal, testJournal } from "../../db/schema.js";
 import type { PackageApiDeps } from "./deps.js";
 import { runBodySchema } from "./schemas.js";
@@ -14,6 +14,12 @@ export function templatizeUrl(url: string, values: Record<string, string>): stri
     result = result.replaceAll(`{${key}}`, value);
   }
   return result;
+}
+
+/** Токен раннера: роль `runner` при наличии, иначе первый из объявленных. */
+export function runnerToken(tokenList: readonly Token[] | undefined): string {
+  if (!tokenList || tokenList.length === 0) return "";
+  return tokenList.find((t) => t.role === "runner")?.value ?? tokenList[0]!.value;
 }
 
 export async function startTest(
@@ -50,7 +56,10 @@ export async function startTest(
     })
     .run();
 
-  const launchUrl = templatizeUrl(testUrl, { id: reqId });
+  // AUTH: url колбэка содержит id и токен раннера.
+  const token = runnerToken(deps.tokens);
+  const callbackUrl = `/api/packages/${name}/versions/${version}/test/${reqId}/callback?token=${encodeURIComponent(token)}`;
+  const launchUrl = templatizeUrl(testUrl, { id: reqId, token, callbackUrl });
   const result = await orch.start(launchUrl);
   if (!result.ok) {
     // TST-05: сбой запуска процесса — запись в журнал как ошибка.
@@ -99,7 +108,10 @@ export async function startBuild(
     })
     .run();
 
-  const launchUrl = templatizeUrl(buildUrl, { id: reqId });
+  // AUTH: url колбэка содержит id и токен раннера.
+  const token = runnerToken(deps.tokens);
+  const callbackUrl = `/api/packages/${name}/build/${reqId}/callback?token=${encodeURIComponent(token)}`;
+  const launchUrl = templatizeUrl(buildUrl, { id: reqId, token, callbackUrl });
   const result = await orch.start(launchUrl);
   if (!result.ok) {
     db.update(buildJournal)

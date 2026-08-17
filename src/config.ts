@@ -2,6 +2,24 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { loadEnvFile } from "node:process";
 import path from "node:path";
+import type { Token } from "./app.js";
+
+const tokensSchema = z
+  .preprocess(
+    (value) => {
+      if (value === undefined || value === "") return [];
+      // AUTH: токены объявляются в конфиге/окружении как JSON-строка.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(value));
+      } catch {
+        throw new Error("TOKENS must be a JSON array of token objects");
+      }
+      return parsed;
+    },
+    z.array(z.object({ value: z.string().min(1), comment: z.string().optional(), role: z.string().optional() })),
+  )
+  .transform((tokens) => tokens as Token[]);
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -34,6 +52,9 @@ const envSchema = z.object({
     .transform((value) => value === "true" || value === "1"),
   // Период фоновой синхронизации с фс в секундах; 0 — выключить.
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(300),
+  // Аутентификация: JSON-массив токенов `[{"value","comment?","role?"}]`.
+  // Пусто/не задано — авторизация выключена.
+  TOKENS: tokensSchema,
 });
 
 export type Config = z.infer<typeof envSchema>;

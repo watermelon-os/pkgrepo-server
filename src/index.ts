@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     repo_root: config.REPO_ROOT || "(unset)",
     use_package_utilities: config.USE_PACKAGE_UTILITIES,
     sync_interval_seconds: config.SYNC_INTERVAL_SECONDS,
+    auth_tokens: config.TOKENS.length,
   });
 
   // REPO_ROOT обязан существовать: он — подготовленный корень для авто-создания.
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
     logger,
     repoAdapter,
     fsRoot: config.REPO_ROOT || undefined,
+    tokens: config.TOKENS,
   });
 
   serve(

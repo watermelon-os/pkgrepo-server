@@ -26,11 +26,13 @@ npm run db:migrate    # apply migrations (creates data/watermelon.db)
 ```
 
 Environment is read from `.env` when present (see `.env.example`):
-`SERVER_HOST`, `SERVER_PORT`, `DATABASE_PATH`, `LOG_LEVEL`, `LOG_STANDARD_FIELDS`, `REPO_ROOT`, `USE_PACKAGE_UTILITIES`, `SYNC_INTERVAL_SECONDS`.
+`SERVER_HOST`, `SERVER_PORT`, `DATABASE_PATH`, `LOG_LEVEL`, `LOG_STANDARD_FIELDS`, `REPO_ROOT`, `USE_PACKAGE_UTILITIES`, `SYNC_INTERVAL_SECONDS`, `TOKENS`.
 
 `LOG_STANDARD_FIELDS` (optional, default empty) lists which standard log fields print their key prefix (`time`, `level`, `logger`, `msg`). By default keys are hidden but values still print, e.g. `2026-08-16T... INFO watermelon-server-ts hello foo=bar`.
 
 `REPO_ROOT` (optional) is a prepared root directory for repositories, must exist if set. When set, `POST /api/repos` resolves paths relative to it (absolute paths must stay inside it), creates missing directories and initializes missing format markers automatically. When unset, repository paths must already exist and be initialized.
+
+`TOKENS` (optional) enables authentication: a JSON array of token objects `[{"value": "...", "comment": "...", "role": "..."}]`. When empty/unset, authentication is off. Tokens are validated on startup (CFG-01) and are never printed to the log. Callback URLs handed to runners contain the runner token (the one with role `runner`, otherwise the first one); launch URL templates can use `{id}`, `{token}` and `{callbackUrl}` placeholders.
 
 ## Development
 
