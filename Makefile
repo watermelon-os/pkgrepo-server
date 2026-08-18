@@ -16,8 +16,9 @@ LIC := $(or $(wildcard LICENSE),LICENSE)
 include ../common/fhs.mk
 
 release:
-	npm ci --omit=dev
+	npm ci
 	npm run build
+	npm prune --omit=dev
 
 # install не пересобирает (dist уже в tar от make dist): в rpmbuild нет package.json.
 # DESTDIR в переменные fhs.mk не входит — префиксуем правила сами.

@@ -12,9 +12,11 @@ License: MIT
 URL: https://github.com/dsaime/linux-tools-edu/tree/master/tools/%{name}
 Source: %{name}-%{version}.tar.gz
 
-BuildRequires: npm
+BuildRequires: nodejs24
+BuildRequires: nodejs24-devel
+BuildRequires: gcc
 BuildRequires: make
-BuildRequires: bash
+BuildRequires: python3
 Requires: /usr/bin/node
 
 # BuildArch: x86_64 aarch64
@@ -38,9 +40,13 @@ watermelon-server это HTTP-сервер (Node.js/Hono) с хранилище�
 # иначе Makefile по умолчанию поставит в /usr/local, а %files ждёт /usr.
 # libdir НЕ передаём: node-модули архитектурно-независимы и в Fedora
 # ставятся в /usr/lib/node_modules (как fhs.mk и %files ниже).
-%make_install prefix=%{_prefix}
+%make_install prefix=%{_prefix} exec_prefix=%{_exec_prefix} libdir=${_libdir}
+# Удалить ELF которые генерируют зависимости от прочих архитектур
+rm -f %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds/{linux-arm64.node,linuxmusl-arm64.node,linuxmusl-x64.node}
+
+find %{buildroot} -type f -name '*.node' -print
 
 %files
 %{_bindir}/%{name}
-%{_prefix}/lib/node_modules/%{name}/
+%{_libdir}/node_modules/%{name}/
 %license %{_licensedir}/%{name}/LICENSE
