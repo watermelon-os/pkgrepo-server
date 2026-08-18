@@ -10,19 +10,26 @@ RELEASE_BIN = $(BUILD_DIR)/$(NAME)-release
 
 include ../common/fhs.mk
 
+release:
+	npm run build
 
 # install не зависит от all: при сборке rpm бинарь уже в tar и пересборка не нужна.
 install:
-	install -d $(DESTDIR)$(bindir) $(DESTDIR)$(man1dir) $(DESTDIR)$(docdir) $(DESTDIR)$(licensdir)
-	install -m 755 $(BIN) $(DESTDIR)$(bindir)/$(NAME)
-	install -m 644 $(MAN) $(DESTDIR)$(man1dir)/$(NAME).1
-	install -m 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
+	install -d $(datarootdir)$(NAME) \
+		$(man1dir) \
+		$(bindir) \
+		$(node_modulesdir) \
+		$(licensdir)
+	install 
+	install -m 644 $(BIN) $(datarootdir)/$(NAME)
+	install -m 644 $(MAN) $(man1dir)/$(NAME).1
+	install -m 644 $(LIC) $(licensdir)/LICENSE
 
 uninstall:
-	rm -f $(DESTDIR)$(bindir)/$(NAME)
-	rm -f $(DESTDIR)$(man1dir)/$(NAME).1
-	rm -f $(DESTDIR)$(licensdir)/LICENSE
-	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) $(DESTDIR)$(docdir)
+	rm -f $(bindir)/$(NAME)
+	rm -f $(man1dir)/$(NAME).1
+	rm -f $(licensdir)/LICENSE
+	rmdir --ignore-fail-on-non-empty $(licensdir) $(docdir)
 
 MKTEMP_TEMP := /tmp/edutoolsdist.XXX
 clean:
