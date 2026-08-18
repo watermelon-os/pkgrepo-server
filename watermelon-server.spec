@@ -15,6 +15,7 @@ Source: %{name}-%{version}.tar.gz
 # BuildRequires: gcc
 # BuildRequires: make
 # BuildRequires: bash
+Requires: /bin/bash /usr/bin/env node
 
 # BuildArch: x86_64 aarch64
 BuildArch: x86_64
@@ -32,9 +33,10 @@ BuildArch: x86_64
 %install
 # %make_install = make install DESTDIR=%{buildroot}. prefix передаём явно,
 # иначе Makefile по умолчанию поставит в /usr/local, а %files ждёт /usr.
-# %make_install prefix=%{_prefix}
+%make_install prefix=%{_prefix} libdir=%{_libdir}
 
 %files
-# %{_bindir}/%{name}
+%{_bindir}/%{name}
 # %{_mandir}/man1/%{name}.1*
-# %license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/LICENSE
+${_libdir}/node_modules/${name}

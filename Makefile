@@ -15,16 +15,17 @@ release:
 	npm run build
 
 install: release
-	install -Dm 755 bin/$(NAME) $(bindir)/$(NAME)
-	 rsync -avz  --mkpath --delete $(BUILD_DIR) $(node_modulesdir)/$(BUILD_DIR)
-	install -Dm 644 $(MAN) $(man1dir)/$(NAME).1
-	install -Dm 644 $(LIC) $(licensdir)/LICENSE
+	ln -s $(DESTDIR)$(node_modulesdir)/bin/$(NAME) $(DESTDIR)$(bindir)/$(NAME)
+	install -Dm 755 bin/$(NAME) $(DESTDIR)$(node_modulesdir)/bin/$(NAME)
+	rsync -avz  --mkpath --delete $(BUILD_DIR) $(DESTDIR)$(node_modulesdir)/$(BUILD_DIR)
+	install -Dm 644 $(MAN) $(DESTDIR)$(man1dir)/$(NAME).1
+	install -Dm 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
 
 uninstall:
-	rm -f $(bindir)/$(NAME) \
-		$(man1dir)/$(NAME).1
-		$(licensdir)/LICENSE
-	rmdir --ignore-fail-on-non-empty $(licensdir) $(docdir) $(node_modulesdir)
+	rm -f $(DESTDIR)$(bindir)/$(NAME) \
+		$(DESTDIR)$(man1dir)/$(NAME).1
+		$(DESTDIR)$(licensdir)/LICENSE
+	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) $(DESTDIR)$(docdir) $(DESTDIR)$(node_modulesdir)
 
 MKTEMP_TEMP := /tmp/edutoolsdist.XXX
 clean:
@@ -34,21 +35,20 @@ clean:
 
 DIST_TAR_TMP_DIR = $(shell mktemp -d)
 dist: release
-	$(eval TEMP_DIR := $(shell mktemp -d $(MKTEMP_TEMP)))
-	$(eval TAR_TEMP_DIR := $(TEMP_DIR)/$(NAMEVER))
-	mkdir -p $(RPMBUILD_DIR)/{SPECS,SOURCES} \
-		$(TAR_TEMP_DIR)
-
-	# поместить в плоскую структуру файлы для архива
-	cp -f bin/$(NAME) $(TAR_TEMP_DIR)/bin/
-	cp -fr $(BUILD_DIR) $(TAR_TEMP_DIR)/
-	cp -f LICENSE $(TAR_TEMP_DIR)/
-	# cp -f $(NAME).1 $(TAR_TEMP_DIR)/
-	cp -f Makefile $(TAR_TEMP_DIR)/
-
-	# создать архив из временной плоской структуры
+	mkdir -p $(RPMBUILD_DIR)/{SPECS,SOURCES}
+	cat ../common/fhs.mk Makefile > Makefile.tmp
+	# sed -i '/include ..\/common\/fhs.mk/d' Makefile.tmp
+	sed -i '\|include ../common/fhs.mk|d' Makefile.tmp
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
-		-C $(TEMP_DIR) $(NAMEVER)
-	rm -rf $(TAR_TEMP_DIR)
+		--transform 's|^Makefile.tmp$$|Makefile|' \
+		--transform 's|^|$(NAMEVER)/|' \
+		bin/$(NAME) $(BUILD_DIR) LICENSE Makefile.tmp
 
+	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
+
+rpm: dist
+	rpmbuild -bb $(RPMBUILD_DIR)/SPECS/$(NAME).spec \
+		--define "package_version $(VERSION)" \
+		--define "_topdir $(CURDIR)/$(RPMBUILD_DIR)"
+	rpm --addsign $(RPMBUILD_DIR)/RPMS/*/$(NAMEVER)*.rpm
