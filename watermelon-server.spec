@@ -40,13 +40,13 @@ watermelon-server это HTTP-сервер (Node.js/Hono) с хранилище�
 # иначе Makefile по умолчанию поставит в /usr/local, а %files ждёт /usr.
 # libdir НЕ передаём: node-модули архитектурно-независимы и в Fedora
 # ставятся в /usr/lib/node_modules (как fhs.mk и %files ниже).
-%make_install prefix=%{_prefix} exec_prefix=%{_exec_prefix} libdir=${_libdir}
+%make_install prefix=%{_prefix} exec_prefix=%{_exec_prefix} libdir=%{_libdir}
 # Удалить ELF которые генерируют зависимости от прочих архитектур
-rm -f %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds/{linux-arm64.node,linuxmusl-arm64.node,linuxmusl-x64.node}
-
-find %{buildroot} -type f -name '*.node' -print
+# rm -f %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds/{linux-arm64.node,linuxmusl-arm64.node,linuxmusl-x64.node}
+# Оставить только native addon для целевой Linux-платформы.
+find %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds -type f ! -name 'linux-x64.node' -delete
 
 %files
 %{_bindir}/%{name}
 %{_libdir}/node_modules/%{name}/
-%license %{_licensedir}/%{name}/LICENSE
+%license %{_defaultlicensedir}/%{name}/LICENSE
