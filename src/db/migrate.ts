@@ -4,9 +4,13 @@ import { loadConfig } from "../config.js";
 import { openDb } from "./index.js";
 import { createLogger, type Logger } from "../logger.js";
 
+// Миграции лежат рядом с кодом (drizzle/ в корне пакета), а не в cwd — cwd
+// сервиса (systemd) может не быть каталогом установки.
+const defaultMigrationsFolder = resolve(import.meta.dirname, "../../drizzle");
+
 export async function runMigrations(
   dbPath: string,
-  migrationsFolder: string = resolve(process.cwd(), "drizzle"),
+  migrationsFolder: string = defaultMigrationsFolder,
   logger: Logger = createLogger({ level: "info" }),
 ): Promise<void> {
   const { db, sqlite } = await openDb(dbPath);

@@ -28,6 +28,7 @@ install:
 	install -Dm 755 bin/$(NAME) $(DESTDIR)$(node_modulesdir)/bin/$(NAME)
 	rsync -avz --mkpath --delete node_modules/ $(DESTDIR)$(node_modulesdir)/node_modules
 	rsync -avz --mkpath --delete $(BUILD_DIR)/ $(DESTDIR)$(node_modulesdir)/$(BUILD_DIR)
+	rsync -avz --mkpath drizzle/ $(DESTDIR)$(node_modulesdir)/drizzle
 	install -Dm 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
 
 uninstall:
@@ -51,7 +52,7 @@ dist: release
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
 		--transform 's|^Makefile.tmp$$|Makefile|' \
 		--transform 's|^|$(NAMEVER)/|' \
-		bin/$(NAME) $(BUILD_DIR) node_modules LICENSE Makefile.tmp
+		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp
 	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
 
