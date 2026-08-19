@@ -26,20 +26,16 @@ async function main(): Promise<void> {
     database_path: config.DATABASE_PATH,
     log_level: config.LOG_LEVEL,
     standard_fields: config.LOG_STANDARD_FIELDS.length ? config.LOG_STANDARD_FIELDS.join(",") : "(none)",
-    repo_root: config.REPO_ROOT || "(unset)",
+    repo_root: config.REPO_ROOT,
     use_package_utilities: config.USE_PACKAGE_UTILITIES,
     sync_interval_seconds: config.SYNC_INTERVAL_SECONDS,
     auth_tokens: config.TOKENS.length,
   });
 
   // REPO_ROOT обязан существовать: он — подготовленный корень для авто-создания.
-  if (config.REPO_ROOT && !existsSync(config.REPO_ROOT)) {
+  if (!existsSync(config.REPO_ROOT)) {
     logger.error("REPO_ROOT does not exist", { root: config.REPO_ROOT });
     process.exit(1);
-  }
-  if (!config.REPO_ROOT) {
-    // Рут не задан — авто-создание/инициализация путей репозиториев выключены.
-    logger.warn("REPO_ROOT is not set: repository paths must exist and be initialized beforehand");
   }
 
   await runMigrations(config.DATABASE_PATH, undefined, logger);
@@ -52,7 +48,7 @@ async function main(): Promise<void> {
     version,
     logger,
     repoAdapter,
-    fsRoot: config.REPO_ROOT || undefined,
+    fsRoot: config.REPO_ROOT,
     tokens: config.TOKENS,
   });
 

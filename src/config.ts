@@ -27,7 +27,7 @@ const envSchema = z.object({
     .default("development"),
   SERVER_HOST: z.string().min(1).default("0.0.0.0"),
   SERVER_PORT: z.coerce.number().int().positive().max(65535).default(34817),
-  DATABASE_PATH: z.string().min(1).default("data/watermelon.db"),
+  DATABASE_PATH: z.string().min(1),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   // Стандартные поля лога в каждой строке (time, level, logger, msg), через запятую.
   // По умолчанию пусто — ключи стандартных полей скрыты, значения выводятся.
@@ -42,8 +42,8 @@ const envSchema = z.object({
             .filter((s) => s && ["time", "level", "logger", "msg"].includes(s)),
     z.array(z.enum(["time", "level", "logger", "msg"])).default([]),
   ),
-  // Корневой каталог репозиториев; пустой — авто-создание/инициализация выключены.
-  REPO_ROOT: z.string().default(""),
+  // Корневой каталог репозиториев; обязателен.
+  REPO_ROOT: z.string().min(1),
   USE_PACKAGE_UTILITIES: z
     .preprocess(
       (value) => (value === undefined ? undefined : String(value).toLowerCase()),
@@ -115,11 +115,9 @@ export function loadConfig(
     DATABASE_PATH: path.isAbsolute(parsed.DATABASE_PATH)
       ? parsed.DATABASE_PATH
       : path.join(baseDir, parsed.DATABASE_PATH),
-    REPO_ROOT: parsed.REPO_ROOT
-      ? path.isAbsolute(parsed.REPO_ROOT)
-        ? parsed.REPO_ROOT
-        : path.join(baseDir, parsed.REPO_ROOT)
-      : "",
+    REPO_ROOT: path.isAbsolute(parsed.REPO_ROOT)
+      ? parsed.REPO_ROOT
+      : path.join(baseDir, parsed.REPO_ROOT),
   };
 }
 
