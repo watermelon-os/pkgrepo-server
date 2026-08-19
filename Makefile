@@ -15,6 +15,9 @@ LIC := $(or $(wildcard LICENSE),LICENSE)
 
 include ../common/fhs.mk
 
+# repodir — репозитории пакетов.
+repodir = $(srvdir)/repo
+
 release:
 	npm ci
 	npm run build
@@ -31,12 +34,17 @@ install:
 	rsync -avz --mkpath drizzle/ $(DESTDIR)$(node_modulesdir)/drizzle
 	install -Dm 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
 	install -Dm 600 .env.example $(DESTDIR)$(sysconfdir)/sysconfig/$(NAME)
+	install -d $(DESTDIR)$(repodir) $(DESTDIR)$(localstatedir)/lib/$(NAME)
 
 uninstall:
 	rm -f $(DESTDIR)$(bindir)/$(NAME) \
 		$(DESTDIR)$(node_modulesdir)
 		$(DESTDIR)$(licensdir)/LICENSE
-	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) $(DESTDIR)$(docdir) $(DESTDIR)$(node_modulesdir)
+	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) \
+		$(DESTDIR)$(docdir) \
+		$(DESTDIR)$(node_modulesdir) \
+		$(DESTDIR)$(repodir) \
+		$(DESTDIR)$(localstatedir)/lib/$(NAME)
 
 clean:
 	rm -rf $(BUILD_DIR) $(RPMBUILD_DIR)

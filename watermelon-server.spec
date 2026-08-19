@@ -1,4 +1,5 @@
 %{!?package_release: %global package_release 1}
+%global srvdir /srv
 
 Name: watermelon-server
 # rpmbuld --define "package_version 1.2.3"
@@ -18,6 +19,13 @@ BuildRequires: gcc
 BuildRequires: make
 BuildRequires: python3
 Requires: /usr/bin/node
+# Requires: (createrepo_c or createrepo)
+# Requires: dpkg-dev
+# Requires: pacman
+Suggests: rpm
+Suggests: dpkg
+Suggests: tar
+
 
 # BuildArch: x86_64 aarch64
 BuildArch: x86_64
@@ -40,13 +48,21 @@ watermelon-server это HTTP-сервер (Node.js/Hono) с хранилище�
 # иначе Makefile по умолчанию поставит в /usr/local, а %files ждёт /usr.
 # libdir НЕ передаём: node-модули архитектурно-независимы и в Fedora
 # ставятся в /usr/lib/node_modules (как fhs.mk и %files ниже).
-%make_install prefix=%{_prefix} exec_prefix=%{_exec_prefix} libdir=%{_libdir} sysconfdir=%{_sysconfdir}
+%make_install prefix=%{_prefix} \
+    exec_prefix=%{_exec_prefix} \
+    libdir=%{_libdir} \
+    sysconfdir=%{_sysconfdir} \
+    localstatedir=%{_localstatedir} \
+    srvdir=%{srvdir}
 # Удалить ELF которые генерируют зависимости от прочих архитектур
 # Оставить только native addon для целевой Linux-платформы.
-find %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds -type f ! -name 'linux-x64.node' -delete
+%define sqlite_prebuilds %{buildroot}%{_libdir}/node_modules/%{name}/node_modules/better-sqlite3/prebuilds
+find %{sqlite_prebuilds} -type f ! -name 'linux-x64.node' -delete
 
 %files
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 %{_bindir}/%{name}
 %{_libdir}/node_modules/%{name}/
 %license %{_defaultlicensedir}/%{name}/LICENSE
+%dir %{_localstatedir}/lib/%{name}
+%dir %{srvdir}/repo
