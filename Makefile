@@ -35,11 +35,13 @@ install:
 	install -Dm 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
 	install -Dm 600 .env.example $(DESTDIR)$(sysconfdir)/sysconfig/$(NAME)
 	install -d $(DESTDIR)$(repodir) $(DESTDIR)$(localstatedir)/lib/$(NAME)
+	install -Dm 644 $(NAME).service $(DESTDIR)$(unitdir)/$(NAME).service
 
 uninstall:
 	rm -f $(DESTDIR)$(bindir)/$(NAME) \
-		$(DESTDIR)$(node_modulesdir)
-		$(DESTDIR)$(licensdir)/LICENSE
+		$(DESTDIR)$(node_modulesdir) \
+		$(DESTDIR)$(licensdir)/LICENSE \
+		$(DESTDIR)$(unitdir)/$(NAME).service
 	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) \
 		$(DESTDIR)$(docdir) \
 		$(DESTDIR)$(node_modulesdir) \
@@ -58,7 +60,7 @@ dist: release
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
 		--transform 's|^Makefile.tmp$$|Makefile|' \
 		--transform 's|^|$(NAMEVER)/|' \
-		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp .env.example
+		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp .env.example $(NAME).service
 	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
 

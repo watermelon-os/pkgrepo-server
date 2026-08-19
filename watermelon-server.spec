@@ -19,6 +19,7 @@ BuildRequires: gcc
 BuildRequires: make
 BuildRequires: python3
 Requires: /usr/bin/node
+Requires: systemd
 # Requires: (createrepo_c or createrepo)
 # Requires: dpkg-dev
 # Requires: pacman
@@ -66,3 +67,4 @@ find %{sqlite_prebuilds} -type f ! -name 'linux-x64.node' -delete
 %license %{_defaultlicensedir}/%{name}/LICENSE
 %dir %{_localstatedir}/lib/%{name}
 %dir %{srvdir}/repo
+%{_unitdir}/%{name}.service
