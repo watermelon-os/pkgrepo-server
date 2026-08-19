@@ -9,6 +9,5 @@ EnvironmentFile=/etc/sysconfig/watermelon-server
 ExecStart=/usr/bin/env watermelon-server 
 Restart=on-failure
 
-
-
 [Install]
+WantedBy=multi-user.target

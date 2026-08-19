@@ -30,6 +30,7 @@ install:
 	rsync -avz --mkpath --delete $(BUILD_DIR)/ $(DESTDIR)$(node_modulesdir)/$(BUILD_DIR)
 	rsync -avz --mkpath drizzle/ $(DESTDIR)$(node_modulesdir)/drizzle
 	install -Dm 644 $(LIC) $(DESTDIR)$(licensdir)/LICENSE
+	install -Dm 600 .env.example $(DESTDIR)$(sysconfdir)/sysconfig/$(NAME)
 
 uninstall:
 	rm -f $(DESTDIR)$(bindir)/$(NAME) \
@@ -37,11 +38,8 @@ uninstall:
 		$(DESTDIR)$(licensdir)/LICENSE
 	rmdir --ignore-fail-on-non-empty $(DESTDIR)$(licensdir) $(DESTDIR)$(docdir) $(DESTDIR)$(node_modulesdir)
 
-MKTEMP_TEMP := /tmp/edutoolsdist.XXX
 clean:
-	rm -rf $(BUILD_DIR)
-	rm -rf $(subst XXX,*,$(MKTEMP_TEMP))
-	rm -rf $(RPMBUILD_DIR)/{RPMS/x86_64,SOURCES,SPECS}/$(NAME)*
+	rm -rf $(BUILD_DIR) $(RPMBUILD_DIR)
 
 DIST_TAR_TMP_DIR = $(shell mktemp -d)
 dist: release
@@ -52,7 +50,7 @@ dist: release
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
 		--transform 's|^Makefile.tmp$$|Makefile|' \
 		--transform 's|^|$(NAMEVER)/|' \
-		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp
+		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp .env.example
 	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
 
@@ -64,3 +62,4 @@ rpm: dist
 
 print:
 	@echo $(DESTDIR)$(bindir)/$(NAME)
+	@echo $(DESTDIR)$(sysconfdir)/sysconfig/$(NAME)
