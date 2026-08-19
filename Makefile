@@ -27,8 +27,9 @@ release:
 # DESTDIR в переменные fhs.mk не входит — префиксуем правила сами.
 install:
 	mkdir -p $(DESTDIR)$(bindir)
-	ln -s $(node_modulesdir)/bin/$(NAME) $(DESTDIR)$(bindir)/$(NAME)
-	install -Dm 755 bin/$(NAME) $(DESTDIR)$(node_modulesdir)/bin/$(NAME)
+	ln -s $(node_modulesdir)/bin/$(NAME).js $(DESTDIR)$(bindir)/$(NAME)
+	install -Dm 755 bin/$(NAME).js $(DESTDIR)$(node_modulesdir)/bin/$(NAME).js
+	install -Dm 644 package.json $(DESTDIR)$(node_modulesdir)/package.json
 	rsync -avz --mkpath --delete node_modules/ $(DESTDIR)$(node_modulesdir)/node_modules
 	rsync -avz --mkpath --delete $(BUILD_DIR)/ $(DESTDIR)$(node_modulesdir)/$(BUILD_DIR)
 	rsync -avz --mkpath drizzle/ $(DESTDIR)$(node_modulesdir)/drizzle
@@ -60,7 +61,7 @@ dist: release
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
 		--transform 's|^Makefile.tmp$$|Makefile|' \
 		--transform 's|^|$(NAMEVER)/|' \
-		bin/$(NAME) $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp .env.example $(NAME).service
+		bin/$(NAME).js $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp package.json .env.example $(NAME).service
 	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
 

@@ -4,6 +4,9 @@
   "description": "Hono + Drizzle + SQLite skeleton for the Watermelon server (TypeScript edition).",
   "type": "module",
   "private": true,
+  "bin": {
+    "watermelon-server": "./bin/watermelon-server.js"
+  },
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.12.0"
