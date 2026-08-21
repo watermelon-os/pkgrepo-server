@@ -1,3 +1,7 @@
+.build/
+.rpmbuild/
+.var/
+
 node_modules/
 dist/
 data/
