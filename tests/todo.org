@@ -1,3 +1,6 @@
 * Доработки
 
 - загрузка пакета с автоматическим определением названия, версии и др, путем передачи значения 'auto' в query параметрах
+- выделить в отделбный проект, репозиторий с названием package-repo-server
+- описание: Self-hosted package repository server с элементами lightweight CI (build/test orchestration). Гибрид: artifact repository + minimal CI orchestrator.
+- теги: package-repository rpm deb pacman self-hosted artifact-registry ci build-automation webhook rest-api linux devops lightweight hardlink-storage
