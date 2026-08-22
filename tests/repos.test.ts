@@ -210,7 +210,14 @@ describe("placement between repositories", () => {
   // MOV-01. Несуществующий репозиторий
   it("отклоняет размещение в несуществующий репозиторий", async () => {
     const { app } = makeApp();
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path: rpmRepo(), type: "rpm" },
+    });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+    });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
       body: { repositories: ["ghost"] },
@@ -221,7 +228,14 @@ describe("placement between repositories", () => {
   // MOV-02. Пустой список репозиториев
   it("отклоняет пустой список репозиториев", async () => {
     const { app } = makeApp();
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path: rpmRepo(), type: "rpm" },
+    });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+    });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
       body: { repositories: [] },
@@ -234,9 +248,16 @@ describe("placement between repositories", () => {
     const { app } = makeApp();
     await json(app, "/api/repos", {
       method: "POST",
+      body: { name: "a", path: rpmRepo(), type: "rpm" },
+    });
+    await json(app, "/api/repos", {
+      method: "POST",
       body: { name: "main", path: rpmRepo(), type: "rpm" },
     });
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
+    await json(app, "/api/packages", {
+      method: "POST",
+      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+    });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
       body: { repositories: ["main", "ghost"] },
@@ -244,7 +265,7 @@ describe("placement between repositories", () => {
     expect(res.status).toBe(400);
     const got = await json(app, "/api/packages/nginx");
     const body = (await got.json()) as { repositories?: string[] };
-    expect(body.repositories).not.toContain("main");
+    expect(body.repositories).toEqual(["a"]);
   });
 
   // MOV-04. Репозиторий — свойство пакета; файл появляется в каждом репозитории

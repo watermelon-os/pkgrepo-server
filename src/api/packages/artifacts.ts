@@ -35,7 +35,7 @@ export function getPackage(db: DatabaseClient, name: string) {
   return db.select().from(packages).where(eq(packages.name, name)).get();
 }
 
-/** Создаёт пакет, если его нет, и возвращает запись (для привязки к фактическому имени). */
+/** Создаёт пакет, если его нет, и возвращает запись. */
 export function ensurePackage(
   db: DatabaseClient,
   name: string,
@@ -47,8 +47,6 @@ export function ensurePackage(
     db.insert(packages)
       .values({
         name,
-        testUrl: null,
-        buildUrl: null,
         repositories: repositoriesList,
         createdAt,
       })
@@ -110,6 +108,9 @@ export async function writeFileToRepos(
  * Размещение артефакта через API: контент записывается во временный файл,
  * имя и версия определяются той же цепочкой утилит, что и в синке (фолбэк —
  * только проверка шаблона составленного имени, не слепое согласие с телом).
+ * Расхождение фактического имени/версии с объявленными — всегда ошибка.
+ * deriveVersion: версия берется из метаданных файла (первая загрузка имени);
+ * иначе расхождение версии — ошибка до записи в фс.
  */
 export async function writeArtifactToRepos(
   db: DatabaseClient,
@@ -118,7 +119,7 @@ export async function writeArtifactToRepos(
   version: string,
   content: Uint8Array,
   adapter: RepoAdapter,
-  resolveName = false,
+  options: { deriveVersion?: boolean } = {},
 ): Promise<ParsedArtifact> {
   const repo = reposOf(db, pkg)[0];
   if (!repo) throw new ArtifactError("no_repositories");
@@ -134,10 +135,13 @@ export async function writeArtifactToRepos(
   } finally {
     await rm(probeDir, { recursive: true, force: true });
   }
-  // resolveName: сервер переименовывает файл под фактическое имя/версию (PRS-07).
   if (!parsed) throw new ArtifactError("artifact_unparseable");
-  if (parsed.name !== name && !resolveName) {
+  // Проверки до записи в фс (Атомарность): ошибка не оставляет файлов.
+  if (parsed.name !== name) {
     throw new ArtifactError("artifact_name_mismatch", parsed);
+  }
+  if (!options.deriveVersion && parsed.version !== version) {
+    throw new ArtifactError("artifact_version_mismatch", parsed);
   }
   await writeFileToRepos(db, pkg, parsed.name, parsed.version, content, adapter);
   return parsed;

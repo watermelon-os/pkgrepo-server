@@ -8,9 +8,3 @@ export interface Token {
   comment?: string;
   role?: string;
 }
-
-export interface OrchClient {
-  start(
-    url: string,
-  ): Promise<{ ok: boolean; error?: string; response?: string }> | { ok: boolean; error?: string; response?: string };
-}

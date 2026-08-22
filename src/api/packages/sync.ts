@@ -62,8 +62,6 @@ export async function runSync(
         db.insert(packages)
           .values({
             name,
-            testUrl: null,
-            buildUrl: null,
             repositories: [repo.name],
             createdAt: new Date(),
           })

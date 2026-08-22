@@ -6,7 +6,7 @@ import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
 import { createLogger, type Logger } from "./logger.js";
 import type { RepoAdapter } from "./repoAdapter.js";
-import type { Token, OrchClient } from "./types.js";
+import type { Token } from "./types.js";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -21,9 +21,6 @@ export interface AppDeps {
   startedAt?: number;
   logger?: Logger;
   fsRoot?: string;
-  commonTestUrl?: string;
-  commonBuildUrl?: string;
-  orch?: OrchClient;
   tokens?: Token[];
   repoAdapter?: RepoAdapter;
 }
@@ -41,9 +38,7 @@ export function createApp(deps: AppDeps): Hono {
       // AUTH-01..03: доступ по токенам из конфига.
       const header = c.req.header("authorization");
       const bearer = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
-      // AUTH-04: url колбэка содержит токен раннера — токен может прийти в url (?token=).
-      const token = bearer ?? c.req.query("token");
-      if (!token || !deps.tokens.some((t) => t.value === token)) {
+      if (!bearer || !deps.tokens.some((t) => t.value === bearer)) {
         return c.json({ error: "unauthorized" }, 401);
       }
     }

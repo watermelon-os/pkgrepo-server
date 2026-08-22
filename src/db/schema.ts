@@ -2,8 +2,6 @@ import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core"
 
 export const packages = sqliteTable("packages", {
   name: text("name").primaryKey(),
-  testUrl: text("test_url"),
-  buildUrl: text("build_url"),
   repositories: text("repositories", { mode: "json" }).$type<string[]>().notNull().default([]),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -36,34 +34,3 @@ export const versions = sqliteTable(
 
 export type Version = typeof versions.$inferSelect;
 export type NewVersion = typeof versions.$inferInsert;
-
-export const testJournal = sqliteTable("test_journal", {
-  id: text("id").primaryKey(),
-  packageName: text("package_name")
-    .notNull()
-    .references(() => packages.name, { onDelete: "cascade" }),
-  version: text("version").notNull(),
-  status: text("status").notNull(),
-  invalid: integer("invalid", { mode: "boolean" }).notNull().default(false),
-  body: text("body"),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
-
-export type TestJournal = typeof testJournal.$inferSelect;
-export type NewTestJournal = typeof testJournal.$inferInsert;
-
-export const buildJournal = sqliteTable("build_journal", {
-  id: text("id").primaryKey(),
-  packageName: text("package_name")
-    .notNull()
-    .references(() => packages.name, { onDelete: "cascade" }),
-  version: text("version").notNull(),
-  resultVersion: text("result_version"),
-  status: text("status").notNull(),
-  invalid: integer("invalid", { mode: "boolean" }).notNull().default(false),
-  body: text("body"),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
-
-export type BuildJournal = typeof buildJournal.$inferSelect;
-export type NewBuildJournal = typeof buildJournal.$inferInsert;

@@ -1,4 +1,4 @@
-import type { OrchClient, Token } from "../../types.js";
+import type { Token } from "../../types.js";
 import type { DatabaseClient } from "../../db/index.js";
 import type { Logger } from "../../logger.js";
 import { createRepoAdapter, type RepoAdapter } from "../../repoAdapter.js";
@@ -6,9 +6,6 @@ import { createRepoAdapter, type RepoAdapter } from "../../repoAdapter.js";
 export interface PackageApiDeps {
   db: DatabaseClient;
   fsRoot?: string;
-  commonTestUrl?: string;
-  commonBuildUrl?: string;
-  orch?: OrchClient;
   logger?: Logger;
   tokens?: Token[];
   repoAdapter?: RepoAdapter;

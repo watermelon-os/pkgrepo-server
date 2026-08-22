@@ -1,49 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { describe, it, expect } from "vitest";
 import * as schema from "../src/db/schema.js";
-import { packages, versions } from "../src/db/schema.js";
-import { makeApp, json, binary } from "./helpers.js";
-
-function rpmRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
-  mkdirSync(join(dir, "repodata"), { recursive: true });
-  return dir;
-}
+import { versions } from "../src/db/schema.js";
+import { makeApp, json, binary, seedRepo, seedPackage } from "./helpers.js";
 
 async function createRepo(app: ReturnType<typeof makeApp>["app"]): Promise<string> {
-  const path = rpmRepo();
-  const res = await json(app, "/api/repos", {
-    method: "POST",
-    body: { name: "a", path, type: "rpm" },
-  });
-  expect(res.status).toBe(201);
-  return path;
+  return seedRepo(app);
 }
 
 describe("packages API", () => {
-  // ADD-02 — пакет-фантом при добавлении имени без файла
-  it("создаёт пакет-фантом при добавлении имени без файла", async () => {
-    const { app } = makeApp();
-    const res = await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    expect(res.status).toBe(201);
-    const body = await res.json();
-    expect(body).toMatchObject({ name: "nginx", versions: [] });
-  });
-
-  // ADD-04 — фантом создается только когда пакета еще нет
-  it("отклоняет дубликат имени пакета", async () => {
-    const { app } = makeApp();
-    expect((await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } })).status).toBe(201);
-    const dup = await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    expect(dup.status).toBe(409);
-  });
-
-  // ADD-01 — пакет сразу с первой версией при добавлении с файлом
+  // ADD-01 — пакет сразу с первой версией при добавлении с файлом (фантомов нет)
   it("создаёт пакет сразу с первой версией при добавлении с файлом", async () => {
     const { app } = makeApp();
     await createRepo(app);
@@ -57,29 +28,24 @@ describe("packages API", () => {
     expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64"]);
   });
 
+  // Фантомов больше нет: имя создается только загрузкой файла.
+  it("отклоняет создание имени без файла", async () => {
+    const { app } = makeApp();
+    const res = await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "file_required" });
+  });
+
   // ADD-03 — повторное добавление той же версии — ошибка
   it("отклоняет повторное добавление той же версии", async () => {
     const { app } = makeApp();
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    await json(app, "/api/packages/nginx/versions", { method: "POST", body: { version: "1.0.0" } });
+    await createRepo(app);
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const dup = await json(app, "/api/packages/nginx/versions", {
       method: "POST",
-      body: { version: "1.0.0" },
+      body: { version: "1.0.0-1.x86_64", file: "other" },
     });
     expect(dup.status).toBe(409);
-  });
-
-  // ADD-05 — url процессов сохраняется при добавлении/обновлении
-  it("сохраняет url процессов при добавлении/обновлении", async () => {
-    const { app } = makeApp();
-    const res = await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", testUrl: "http://node/test" },
-    });
-    expect(res.status).toBe(201);
-    const got = await json(app, "/api/packages/nginx");
-    const body = (await got.json()) as { testUrl?: string };
-    expect(body.testUrl).toBe("http://node/test");
   });
 
   // PKG-01 — обращение к несуществующему пакету — ошибка
@@ -89,28 +55,11 @@ describe("packages API", () => {
     expect(res.status).toBe(404);
   });
 
-  // UPD-02 — обновление без файла: только поля
-  it("обновляет поля без шага фс", async () => {
-    const { app } = makeApp();
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    const res = await json(app, "/api/packages/nginx", {
-      method: "PUT",
-      body: { testUrl: "http://node/test" },
-    });
-    expect(res.status).toBe(200);
-    const got = await json(app, "/api/packages/nginx");
-    const body = (await got.json()) as { testUrl?: string };
-    expect(body.testUrl).toBe("http://node/test");
-  });
-
   // UPD-01 — перезапись при разной хэшсумме, возвращается варнинг
   it("перезаписывает файл и возвращает варнинг при разной хэшсумме", async () => {
     const { app } = makeApp();
     await createRepo(app);
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "old" },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: { file: "new" },
@@ -120,17 +69,14 @@ describe("packages API", () => {
     expect(body.warning).toBe(true);
   });
 
-  // UPD-04 — полное совпадение параметров — ошибка
+  // UPD-02 — полное совпадение параметров — ошибка
   it("отклоняет обновление при полном совпадении параметров", async () => {
     const { app } = makeApp();
     await createRepo(app);
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "same" },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
-      body: { file: "same" },
+      body: { file: `artifact:nginx:1.0.0-1.x86_64` },
     });
     expect(res.status).toBe(409);
   });
@@ -139,6 +85,7 @@ describe("packages API", () => {
   it("находит файл в репозитории при ленивом обновлении индекса", async () => {
     const { app } = makeApp();
     const path = await createRepo(app);
+    const { writeFileSync } = await import("node:fs");
     writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "artifact");
     const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", { method: "PUT", body: {} });
     expect(res.status).toBe(200);
@@ -154,12 +101,21 @@ describe("packages API", () => {
     expect(res.status).toBe(404);
   });
 
-  // UPD-05. Сбой записи файла
+  // UPD-04. Сбой записи файла
   it("не фиксирует операцию при сбое записи файла", async () => {
-    const { app } = makeApp();
+    // Первый вызов update (создание) проходит; далее — сбой.
+    let updates = 0;
+    const { app } = makeApp({
+      repoAdapter: {
+        inspect: async () => ({ name: "nginx", version: "1.0.0-1.x86_64" }),
+        update: async () => {
+          if (updates++ > 0) throw new Error("repo db update failed");
+        },
+      },
+    } as never);
     await createRepo(app);
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx" } });
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0", {
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
+    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: { file: "new" },
     });
@@ -177,7 +133,7 @@ describe("packages API", () => {
 
     const sqlite = new Database(":memory:");
     const db = drizzle(sqlite, { schema });
-    migrate(db, { migrationsFolder: resolve(import.meta.dirname, "../drizzle") });
+    migrate(db, { migrationsFolder: new URL("../drizzle", import.meta.url).pathname });
     const failingDb = new Proxy(db, {
       get(target, prop, receiver) {
         if (prop === "insert") {
@@ -216,10 +172,7 @@ describe("packages API", () => {
   it("удаляет пакет целиком", async () => {
     const { app } = makeApp();
     const path = await createRepo(app);
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "artifact" },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
     const res = await json(app, "/api/packages/nginx", { method: "DELETE" });
     expect(res.status).toBe(204);
@@ -227,14 +180,11 @@ describe("packages API", () => {
     expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
   });
 
-  // Удаление версии: файл, запись версии и журналы этой версии.
+  // Удаление версии: файл и запись версии.
   it("удаляет версию и её файл из всех репозиториев", async () => {
     const { app } = makeApp();
     const path = await createRepo(app);
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "artifact" },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
     const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", { method: "DELETE" });
     expect(res.status).toBe(204);
@@ -246,9 +196,9 @@ describe("packages API", () => {
   });
 });
 
-// PRS-07: ошибка несовпадения имени возвращается с фактическими (ожидаемыми) значениями;
-// resolveName — сервер переименовывает файл под фактическое имя/версию.
-describe("PRS-07 resolveName", () => {
+// PRS-07/PRS-08: расхождение фактического имени/версии файла с объявленными —
+// всегда ошибка, клиенту возвращаются фактические значения из метаданных.
+describe("PRS-07/08 расхождение имён/версий", () => {
   function renameRepo() {
     const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
     mkdirSync(join(dir, "repodata"), { recursive: true });
@@ -277,13 +227,20 @@ describe("PRS-07 resolveName", () => {
       name: "httpd",
       version: "2.4.62-1.el9.x86_64",
     });
+    expect(existsSync(join(path, "httpd-2.4.62-1.el9.x86_64.rpm"))).toBe(false);
+    expect((await json(app, "/api/packages/httpd")).status).toBe(404);
   });
 
-  it("resolveName: размещает файл и запись под фактическим именем", async () => {
+  it("PUT: mismatch версии возвращает фактическую версию", async () => {
     const path = renameRepo();
+    // Первый вызов (создание) — совпадающая версия; далее — фактическая 9.9.9.
+    let calls = 0;
     const { app } = makeApp({
       repoAdapter: {
-        inspect: async () => ({ name: "httpd", version: "2.4.62-1.el9.x86_64" }),
+        inspect: async () =>
+          calls++ === 0
+            ? { name: "nginx", version: "1.0.0-1.x86_64" }
+            : { name: "nginx", version: "9.9.9-1.x86_64" },
         update: async () => {},
       },
     } as never);
@@ -291,35 +248,7 @@ describe("PRS-07 resolveName", () => {
       method: "POST",
       body: { name: "a", path, type: "rpm" },
     });
-    const res = await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", repositories: ["a"], file: "content", resolveName: true },
-    });
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
-    expect(body.name).toBe("httpd");
-    expect(body.versions.map((v) => v.version)).toEqual(["2.4.62-1.el9.x86_64"]);
-    expect(existsSync(join(path, "httpd-2.4.62-1.el9.x86_64.rpm"))).toBe(true);
-    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
-    expect((await json(app, "/api/packages/nginx")).status).toBe(404);
-  });
-
-  it("PUT без resolveName: mismatch версии возвращает фактическую версию", async () => {
-    const path = renameRepo();
-    const { app } = makeApp({
-      repoAdapter: {
-        inspect: async () => ({ name: "nginx", version: "9.9.9-1.x86_64" }),
-        update: async () => {},
-      },
-    } as never);
-    await json(app, "/api/repos", {
-      method: "POST",
-      body: { name: "a", path, type: "rpm" },
-    });
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"] },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: { file: "new" },
@@ -329,40 +258,15 @@ describe("PRS-07 resolveName", () => {
       error: "artifact_version_mismatch",
       version: "9.9.9-1.x86_64",
     });
-  });
-
-  it("PUT с resolveName: переписывает запись под фактическую версию", async () => {
-    const path = renameRepo();
-    const { app } = makeApp({
-      repoAdapter: {
-        inspect: async () => ({ name: "nginx", version: "9.9.9-1.x86_64" }),
-        update: async () => {},
-      },
-    } as never);
-    await json(app, "/api/repos", {
-      method: "POST",
-      body: { name: "a", path, type: "rpm" },
-    });
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"] },
-    });
-    const res = await json(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
-      method: "PUT",
-      body: { file: "new", resolveName: true },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ warning: true, version: "9.9.9-1.x86_64" });
-    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(false);
-    expect(existsSync(join(path, "nginx-9.9.9-1.x86_64.rpm"))).toBe(true);
+    // Запись не изменилась.
     const got = await json(app, "/api/packages/nginx");
     const body = (await got.json()) as { versions: Array<{ version: string }> };
-    expect(body.versions.map((v) => v.version)).toEqual(["9.9.9-1.x86_64"]);
+    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64"]);
   });
 });
 
 // PRS-07: бинарная загрузка — файл в теле запроса (Content-Type: application/octet-stream),
-// имя/версия/repositories/resolveName — в query. JSON-формат (file-строка) остаётся.
+// метаданные — в query. JSON-формат (file-строка) остаётся.
 describe("PRS-07 бинарная загрузка (octet-stream + query)", () => {
   it("создаёт пакет из бинарного тела с метаданными в query", async () => {
     const { app } = makeApp();
@@ -383,23 +287,20 @@ describe("PRS-07 бинарная загрузка (octet-stream + query)", () =
   it("добавляет версию из бинарного тела (query: version)", async () => {
     const { app } = makeApp();
     await createRepo(app);
-    await json(app, "/api/packages", { method: "POST", body: { name: "nginx", repositories: ["a"] } });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res = await binary(app, "/api/packages/nginx/versions?version=2.0.0-1.x86_64", {
       method: "POST",
       body: Buffer.from("v2"),
     });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { versions: Array<{ version: string }> };
-    expect(body.versions.map((v) => v.version)).toEqual(["2.0.0-1.x86_64"]);
+    expect(body.versions.map((v) => v.version)).toEqual(["1.0.0-1.x86_64", "2.0.0-1.x86_64"]);
   });
 
   it("перезаписывает файл бинарным телом (PUT + query)", async () => {
     const { app } = makeApp();
     const path = await createRepo(app);
-    await json(app, "/api/packages", {
-      method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "old" },
-    });
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res = await binary(app, "/api/packages/nginx/versions/1.0.0-1.x86_64", {
       method: "PUT",
       body: Buffer.from("new-bytes"),
@@ -407,27 +308,6 @@ describe("PRS-07 бинарная загрузка (octet-stream + query)", () =
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ warning: true });
     expect(readFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm")).equals(Buffer.from("new-bytes"))).toBe(true);
-  });
-
-  it("resolveName через query размещает файл под фактическим именем", async () => {
-    const path = mkdtempSync(join(tmpdir(), "wm-test-"));
-    mkdirSync(join(path, "repodata"), { recursive: true });
-    const { app } = makeApp({
-      repoAdapter: {
-        inspect: async () => ({ name: "httpd", version: "2.4.62-1.el9.x86_64" }),
-        update: async () => {},
-      },
-    } as never);
-    await json(app, "/api/repos", { method: "POST", body: { name: "a", path, type: "rpm" } });
-    const res = await binary(
-      app,
-      "/api/packages?name=nginx&repositories=a&resolveName=true",
-      { method: "POST", body: Buffer.from("bytes") },
-    );
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
-    expect(body.name).toBe("httpd");
-    expect(body.versions.map((v) => v.version)).toEqual(["2.4.62-1.el9.x86_64"]);
   });
 
   it("принимает бинарное тело и без content-type (как Rext @body)", async () => {
@@ -449,6 +329,18 @@ describe("PRS-07 бинарная загрузка (octet-stream + query)", () =
     const res = await binary(app, "/api/packages", { method: "POST", body: Buffer.from("x") });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: "invalid_request" });
+  });
+
+  it("отклоняет добавление версии без файла", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
+    const res = await binary(app, "/api/packages/nginx/versions?version=2.0.0-1.x86_64", {
+      method: "POST",
+      body: Buffer.alloc(0),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "file_required" });
   });
 
   it("отклоняет бинарный запрос с несуществующим репозиторием", async () => {

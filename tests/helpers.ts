@@ -12,10 +12,7 @@ export interface MakeAppOptions {
   version?: string;
   startedAt?: number;
   logger?: Logger;
-  commonTestUrl?: string;
-  commonBuildUrl?: string;
   fsRoot?: string;
-  orch?: unknown;
   tokens?: Array<{ value: string; comment?: string; role?: string }>;
 }
 
@@ -83,4 +80,43 @@ export function binary(
     },
     body: init.body,
   });
+}
+
+/** Создаёт rpm-репозиторий (проинициализированная директория + POST /api/repos). */
+export async function seedRepo(
+  app: ReturnType<typeof makeApp>["app"],
+  name = "a",
+): Promise<string> {
+  const { mkdirSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = mkdtempSync(join(tmpdir(), "wm-test-"));
+  mkdirSync(join(path, "repodata"), { recursive: true });
+  const res = await json(app, "/api/repos", {
+    method: "POST",
+    body: { name, path, type: "rpm" },
+  });
+  if (res.status !== 201) throw new Error(`seedRepo failed: ${res.status}`);
+  return path;
+}
+
+/** Создаёт пакет с версией и файлом (или добавляет версию к существующему имени). */
+export async function seedPackage(
+  app: ReturnType<typeof makeApp>["app"],
+  name: string,
+  version: string,
+  repo = "a",
+): Promise<void> {
+  const file = `artifact:${name}:${version}`;
+  const res = await json(app, "/api/packages", {
+    method: "POST",
+    body: { name, version, repositories: [repo], file },
+  });
+  if (res.status === 201) return;
+  if (res.status !== 409) throw new Error(`seedPackage failed: ${res.status}`);
+  const add = await json(app, `/api/packages/${name}/versions`, {
+    method: "POST",
+    body: { version, file },
+  });
+  if (add.status !== 201) throw new Error(`seedPackage (add version) failed: ${add.status}`);
 }
