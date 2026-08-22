@@ -120,6 +120,22 @@ describe("server configuration", () => {
     expect(cfg.SYNC_INTERVAL_SECONDS).toBe(0);
   });
 
+  // SYNC_LOG_EMPTY: по умолчанию пустые сканы логируются, параметр их отключает.
+  it("логирование пустых сканов включено по умолчанию", () => {
+    delete process.env.SYNC_LOG_EMPTY;
+    const cfg = loadConfig({ DATABASE_PATH: TEST_DB_PATH, REPO_ROOT: TEST_REPO_ROOT } as never, "/tmp");
+    expect(cfg.SYNC_LOG_EMPTY).toBe(true);
+  });
+
+  it("SYNC_LOG_EMPTY=false отключает логирование пустых сканов", () => {
+    delete process.env.SYNC_LOG_EMPTY;
+    const cfg = loadConfig(
+      { SYNC_LOG_EMPTY: "false", DATABASE_PATH: TEST_DB_PATH, REPO_ROOT: TEST_REPO_ROOT } as never,
+      "/tmp",
+    );
+    expect(cfg.SYNC_LOG_EMPTY).toBe(false);
+  });
+
   it("отклоняет отрицательный период синхронизации", () => {
     delete process.env.SYNC_INTERVAL_SECONDS;
     expect(() =>

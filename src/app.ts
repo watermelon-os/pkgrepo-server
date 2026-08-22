@@ -22,6 +22,8 @@ export interface AppDeps {
   startedAt?: number;
   logger?: Logger;
   fsRoot?: string;
+  /** Логировать сканы синхронизации с нулем найденных пакетов (SYNC_LOG_EMPTY). */
+  logEmptySync?: boolean;
   tokens?: Token[];
   repoAdapter?: RepoAdapter;
 }

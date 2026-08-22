@@ -6,6 +6,8 @@ import { createRepoAdapter, type RepoAdapter } from "../../repoAdapter.js";
 export interface PackageApiDeps {
   db: DatabaseClient;
   fsRoot?: string;
+  /** Логировать сканы синхронизации с нулем найденных пакетов (SYNC_LOG_EMPTY). */
+  logEmptySync?: boolean;
   logger?: Logger;
   tokens?: Token[];
   repoAdapter?: RepoAdapter;

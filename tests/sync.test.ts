@@ -157,3 +157,50 @@ describe("synchronization with fs", () => {
     expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
   });
 });
+
+// SYNC_LOG_EMPTY: скан без найденных пакетов можно не логировать.
+describe("sync: логирование пустых сканов", () => {
+  it("SYNC_LOG_EMPTY=false не пишет 'sync done' при нуле найденных", async () => {
+    const path = rpmRepo();
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger, logEmptySync: false });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { picked: number }).picked).toBe(0);
+    expect(lines.join("\n")).not.toContain("sync done");
+  });
+
+  it("по умолчанию пустой скан логируется", async () => {
+    const path = rpmRepo();
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(lines.join("\n")).toContain("sync done");
+  });
+
+  it("непустой скан логируется даже при SYNC_LOG_EMPTY=false", async () => {
+    const path = rpmRepo();
+    writeFileSync(join(path, "nginx-1.0.0-1.x86_64.rpm"), "content");
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger, logEmptySync: false });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(((await res.json()) as { picked: number }).picked).toBe(1);
+    expect(lines.join("\n")).toContain("sync done");
+  });
+});

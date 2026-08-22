@@ -13,6 +13,7 @@ export interface MakeAppOptions {
   startedAt?: number;
   logger?: Logger;
   fsRoot?: string;
+  logEmptySync?: boolean;
   tokens?: Array<{ value: string; comment?: string; role?: string }>;
 }
 

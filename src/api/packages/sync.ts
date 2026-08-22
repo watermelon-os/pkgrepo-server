@@ -89,6 +89,9 @@ export async function runSync(
       logger.info("sync: picked artifact", { req_id: reqId, name, version, repo: repo.name });
     }
   }
-  logger.info("sync done", { req_id: reqId, picked });
+  // SYNC_LOG_EMPTY: сканы без найденных пакетов можно не логировать.
+  if (picked > 0 || deps.logEmptySync !== false) {
+    logger.info("sync done", { req_id: reqId, picked });
+  }
   return { ok: true, picked };
 }

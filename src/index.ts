@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     repo_root: config.REPO_ROOT,
     use_package_utilities: config.USE_PACKAGE_UTILITIES,
     sync_interval_seconds: config.SYNC_INTERVAL_SECONDS,
+    sync_log_empty: config.SYNC_LOG_EMPTY,
     auth_tokens: config.TOKENS.length,
   });
 
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     logger,
     repoAdapter,
     fsRoot: config.REPO_ROOT,
+    logEmptySync: config.SYNC_LOG_EMPTY,
     tokens: config.TOKENS,
   });
 
@@ -64,7 +66,7 @@ async function main(): Promise<void> {
 
   // Фоновая синхронизация с фс (SVR-03): периодический скан репозиториев.
   let syncing = false;
-  const syncDeps = { db, logger, repoAdapter };
+  const syncDeps = { db, logger, repoAdapter, logEmptySync: config.SYNC_LOG_EMPTY };
   const syncRun = async (): Promise<void> => {
     if (syncing) {
       logger.warn("sync: skipped, previous run still in progress");

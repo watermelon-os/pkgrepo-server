@@ -52,6 +52,13 @@ const envSchema = z.object({
     .transform((value) => value === "true" || value === "1"),
   // Период фоновой синхронизации с фс в секундах; 0 — выключить.
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(300),
+  // Логировать сканы синхронизации, не нашедшие ни одного пакета (по умолчанию да).
+  SYNC_LOG_EMPTY: z
+    .preprocess(
+      (value) => (value === undefined ? undefined : String(value).toLowerCase()),
+      z.enum(["true", "false", "1", "0"]).default("true"),
+    )
+    .transform((value) => value === "true" || value === "1"),
   // Аутентификация: JSON-массив токенов `[{"value","comment?","role?"}]`.
   // Пусто/не задано — авторизация выключена.
   TOKENS: tokensSchema,
