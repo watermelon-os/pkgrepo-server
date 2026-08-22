@@ -4,7 +4,7 @@ import { Hono, type Context } from "hono";
 import { specs } from "../db/schema.js";
 import { createLogger, type Logger } from "../logger.js";
 import type { DatabaseClient } from "../db/index.js";
-import { parseSpecContent } from "../specs.js";
+import { parseSpecContent, specParseErrorReason } from "../specs.js";
 import { ensurePackage, sha256 } from "./packages/artifacts.js";
 
 export interface NamesApiDeps {
@@ -96,8 +96,10 @@ export function specsSearchRoutes(deps: NamesApiDeps): Hono {
         content = bytes.byteLength > 0 ? new Uint8Array(bytes) : undefined;
         override = queryBool(c.req.query("override"));
       }
-    } catch {
-      return c.json({ error: "invalid_request" }, 400);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn("spec request rejected", { req_id: reqId, reason });
+      return c.json({ error: "invalid_request", message: reason }, 400);
     }
     if (content === undefined) return c.json({ error: "file_required" }, 400);
 
@@ -105,7 +107,14 @@ export function specsSearchRoutes(deps: NamesApiDeps): Hono {
     const parsed = parseSpecContent(text);
     if (!parsed) {
       // NM-05: невалидный спек — ошибка, имя не создается.
-      return c.json({ error: "invalid_spec" }, 400);
+      const reason = specParseErrorReason(text);
+      logger.warn("spec rejected", {
+        req_id: reqId,
+        reason,
+        size: content.byteLength,
+        override,
+      });
+      return c.json({ error: "invalid_spec", message: reason }, 400);
     }
 
     const now = new Date();

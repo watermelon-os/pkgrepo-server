@@ -49,8 +49,15 @@ export function createApp(deps: AppDeps): Hono {
     const reqLogger = logger.child({ req_id: reqId });
     c.set("reqId", reqId);
     c.set("logger", reqLogger);
-    reqLogger.info("request", { method: c.req.method, path: c.req.path });
+    const startedAt = Date.now();
+    reqLogger.debug("request started", { method: c.req.method, path: c.req.path });
     await next();
+    reqLogger.info("request done", {
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      duration_ms: Date.now() - startedAt,
+    });
   });
 
   app.route("/api/health", healthRoutes({ ...deps, startedAt: deps.startedAt ?? Date.now() }));

@@ -27,9 +27,71 @@ describe("specs API", () => {
       body: { file: "Summary: nothing here\n" },
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: "invalid_spec" });
+    expect(await res.json()).toMatchObject({
+      error: "invalid_spec",
+      message: "no Name/Version tags found",
+    });
     const got = await json(app, "/api/packages/nginx");
     expect(got.status).toBe(404);
+  });
+
+  // RPM-макросы в значениях тегов: %{?dist} без определения → пусто.
+  it("принимает Release с %{?dist}", async () => {
+    const { app } = makeApp();
+    const res = await json(app, "/api/specs", {
+      method: "POST",
+      body: { file: makeSpecText("nginx", "1.24.0", "1%{?dist}") },
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ name: "nginx", version: "1.24.0-1" });
+  });
+
+  // Подстановка %{name} и %{version} из самих тегов.
+  it("раскрывает %{name}/%{version} в других тегах", async () => {
+    const { app } = makeApp();
+    const file = [
+      "Name:           hello",
+      "Version:        2.10",
+      "Release:        1%{?dist}",
+      "Source0:        https://example.com/%{name}-%{version}.tar.gz",
+      "",
+      "%description",
+      "test",
+    ].join("\n");
+    const res = await json(app, "/api/specs", { method: "POST", body: { file } });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ name: "hello", version: "2.10-1" });
+  });
+
+  // Макросы из %global/%define раскрываются.
+  it("раскрывает макросы из %global/%define", async () => {
+    const { app } = makeApp();
+    const file = [
+      "%global package_version 3.5",
+      "%define pkg_release 2%{?dist}",
+      "Name:           mypkg",
+      "Version:        %{package_version}",
+      "Release:        %{pkg_release}",
+      "",
+      "%description",
+      "test",
+    ].join("\n");
+    const res = await json(app, "/api/specs", { method: "POST", body: { file } });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ name: "mypkg", version: "3.5-2" });
+  });
+
+  // Нераскрываемый макрос — ошибка с причиной в ответе.
+  it("отклоняет нераскрываемый макрос с message в ответе", async () => {
+    const { app } = makeApp();
+    const res = await json(app, "/api/specs", {
+      method: "POST",
+      body: { file: "Name: x\nVersion: %{package_version}\n" },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_spec");
+    expect(body.message).toContain("%{package_version}");
   });
 
   // Несколько спеков у имени (каждый со своей версией)
