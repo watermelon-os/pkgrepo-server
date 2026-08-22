@@ -41,10 +41,24 @@ export function createApp(deps: AppDeps): Hono {
       // AUTH-01..03: доступ по токенам из конфига.
       const header = c.req.header("authorization");
       const bearer = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
-      if (!bearer || !deps.tokens.some((t) => t.value === bearer)) {
+      const reason = !header
+        ? "missing_authorization_header"
+        : !bearer
+          ? "malformed_authorization_header"
+          : !deps.tokens.some((t) => t.value === bearer)
+            ? "invalid_token"
+            : undefined;
+      if (reason !== undefined) {
+        logger.warn("request unauthorized", {
+          method: c.req.method,
+          path: c.req.path,
+          reason,
+          token: bearer,
+        });
         return c.json({ error: "unauthorized" }, 401);
       }
     }
+
     const reqId = generateRequestId();
     const reqLogger = logger.child({ req_id: reqId });
     c.set("reqId", reqId);

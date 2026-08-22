@@ -50,6 +50,11 @@ function queryRepositories(v: string | undefined): string[] | undefined {
   return list.length === 0 ? undefined : list;
 }
 
+function queryBool(v: string | undefined): boolean | undefined {
+  if (v === undefined) return undefined;
+  return v === "true" || v === "1";
+}
+
 /** Ответ для ошибок размещения: код + фактические имя/версия из метаданных. */
 function artifactErrorResponse(c: Context, error: ArtifactError) {
   return c.json(
@@ -135,6 +140,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
           filename: c.req.query("filename") ?? undefined,
           repositories: queryRepositories(c.req.query("repositories")),
           specVersion: c.req.query("specVersion") ?? undefined,
+          override: queryBool(c.req.query("override")),
         });
       }
     } catch {
@@ -159,25 +165,68 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (!derived) {
       return artifactErrorResponse(c, new ArtifactError("artifact_unparseable"));
     }
-    if (getPackage(db, derived.name)) {
-      return c.json({ error: "package_exists" }, 409);
+    // Имя — только объединение версий: если имя уже есть (например, создано
+    // спеком), просто добавляем в него версию. Уникальность — у версии
+    // (имя+версия+хэш), а не у имени.
+    const now = new Date();
+    let pkg = getPackage(db, derived.name);
+    if (!pkg) {
+      db.insert(packages)
+        .values({
+          name: derived.name,
+          repositories: body.repositories ?? [],
+          createdAt: now,
+        })
+        .run();
+      pkg = getPackage(db, derived.name)!;
+    } else {
+      // MOV-06: репозитории из запроса добавляются к существующему списку.
+      const merged = [...new Set([...pkg.repositories, ...(body.repositories ?? [])])];
+      if (merged.length !== pkg.repositories.length) {
+        db.update(packages)
+          .set({ repositories: merged })
+          .where(eq(packages.name, derived.name))
+          .run();
+        pkg = getPackage(db, derived.name)!;
+      }
     }
+
+    // Уникальность версии: имя+версия; без override дубль — ошибка (NM-04).
+    const dup = db
+      .select()
+      .from(versions)
+      .where(and(eq(versions.packageName, derived.name), eq(versions.version, derived.version)))
+      .get();
+    if (dup && body.override !== true) {
+      const sameHash = dup.sha256 === sha256(file);
+      logger.warn(sameHash ? "package upload: no changes" : "version upload rejected: version exists", {
+        req_id: reqId,
+        name: derived.name,
+        version: derived.version,
+        sha256: dup.sha256,
+      });
+      return c.json({ error: sameHash ? "no_changes" : "version_exists" }, 409);
+    }
+
     const specId = resolveSpecId(db, derived.name, body.specVersion);
     if (specId === "not_found") {
       return c.json({ error: "spec_not_found", specVersion: body.specVersion }, 400);
     }
-    const now = new Date();
-    db.insert(packages)
-      .values({
-        name: derived.name,
-        repositories: body.repositories ?? [],
-        createdAt: now,
-      })
-      .run();
-
-    const pkg = getPackage(db, derived.name)!;
     await writeFileToRepos(db, pkg, derived.name, derived.version, file, adapter);
     try {
+      if (dup) {
+        // NM-04 override: перезапись «втупую», хэш пересчитывается.
+        db.update(versions)
+          .set({ sha256: sha256(file), specId })
+          .where(and(eq(versions.packageName, derived.name), eq(versions.version, derived.version)))
+          .run();
+        logger.info("package version overridden", {
+          req_id: reqId,
+          name: derived.name,
+          version: derived.version,
+        });
+        return c.json(buildPackageResponse(deps, pkg));
+      }
       db.insert(versions)
         .values({
           packageName: derived.name,
@@ -200,6 +249,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
   // Добавление версии к существующему имени (имя адресуется путем, версия
   // разбирается из файла).
   app.post("/:name/versions", async (c) => {
+    const reqId = c.get("reqId");
     const name = c.req.param("name");
     if (!nameSchema.safeParse(name).success) return c.json({ error: "invalid_request" }, 400);
     let body: z.infer<typeof versionBodySchema>;
@@ -215,6 +265,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         body = versionBodySchema.parse({
           filename: c.req.query("filename") ?? undefined,
           specVersion: c.req.query("specVersion") ?? undefined,
+          override: queryBool(c.req.query("override")),
         });
       }
     } catch {
@@ -242,7 +293,16 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       .from(versions)
       .where(and(eq(versions.packageName, name), eq(versions.version, derived.version)))
       .get();
-    if (dup) return c.json({ error: "version_exists" }, 409);
+    if (dup && body.override !== true) {
+      const sameHash = dup.sha256 === sha256(file);
+      logger.warn(sameHash ? "version upload: no changes" : "version upload rejected: version exists", {
+        req_id: reqId,
+        name,
+        version: derived.version,
+        sha256: dup.sha256,
+      });
+      return c.json({ error: sameHash ? "no_changes" : "version_exists" }, 409);
+    }
 
     const specId = resolveSpecId(db, name, body.specVersion);
     if (specId === "not_found") {
@@ -250,15 +310,34 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     }
     const now = new Date();
     await writeFileToRepos(db, pkg, name, derived.version, file, adapter);
-    db.insert(versions)
-      .values({
-        packageName: name,
-        version: derived.version,
-        sha256: sha256(file),
-        specId,
-        createdAt: now,
-      })
-      .run();
+    try {
+      if (dup) {
+        // NM-04 override: перезапись «втупую», хэш пересчитывается.
+        db.update(versions)
+          .set({ sha256: sha256(file), specId })
+          .where(and(eq(versions.packageName, name), eq(versions.version, derived.version)))
+          .run();
+        logger.info("package version overridden", {
+          req_id: reqId,
+          name,
+          version: derived.version,
+        });
+        return c.json(buildPackageResponse(deps, pkg));
+      }
+      db.insert(versions)
+        .values({
+          packageName: name,
+          version: derived.version,
+          sha256: sha256(file),
+          specId,
+          createdAt: now,
+        })
+        .run();
+    } catch (error) {
+      // ATOM-01/ATOM-02: компенсация — удалить записанное в фс.
+      await removeArtifactFromRepos(db, pkg, name, derived.version);
+      throw error;
+    }
     return c.json(buildPackageResponse(deps, pkg), 201);
   });
 
@@ -357,6 +436,7 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
 
   // UPD-01..04. Обновление версии.
   app.put("/:name/versions/:version", async (c) => {
+    const reqId = c.get("reqId");
     const name = c.req.param("name");
     const version = c.req.param("version");
     if (!nameSchema.safeParse(name).success || !versionSchema.safeParse(version).success) {
@@ -448,6 +528,11 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     const newHash = sha256(file);
     // UPD-02: полное совпадение параметров — ошибка.
     if (row.sha256 === newHash) {
+      logger.warn("version update rejected: no changes", {
+        req_id: reqId,
+        name,
+        version,
+      });
       return c.json({ error: "no_changes" }, 409);
     }
     // UPD-01: перезапись при разной хэшсумме — варнинг. Имя/версия файла

@@ -12,12 +12,15 @@ export const createBodySchema = z.object({
   filename: filenameSchema.optional(),
   repositories: z.array(z.string().min(1)).optional(),
   specVersion: versionSchema.optional(),
+  // NM-04: перезапись существующей версии «втупую» с пересчетом хэша.
+  override: z.boolean().optional(),
 });
 
 export const versionBodySchema = z.object({
   file: z.string().optional(),
   filename: filenameSchema.optional(),
   specVersion: versionSchema.optional(),
+  override: z.boolean().optional(),
 });
 
 export const versionUpdateBodySchema = z.object({
