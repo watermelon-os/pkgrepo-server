@@ -7,7 +7,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { describe, it, expect } from "vitest";
 import * as schema from "../src/db/schema.js";
 import { versions } from "../src/db/schema.js";
-import { makeApp, json, binary, seedRepo, seedPackage } from "./helpers.js";
+import { makeApp, json, binary, seedRepo, seedPackage, seedSpec } from "./helpers.js";
 
 async function createRepo(app: ReturnType<typeof makeApp>["app"]): Promise<string> {
   return seedRepo(app);
@@ -46,6 +46,82 @@ describe("packages API", () => {
       body: { filename: "nginx-1.0.0-1.x86_64.rpm", file: "other" },
     });
     expect(dup.status).toBe(409);
+  });
+
+  // NM-01 + ADD-01 — имя, созданное спеком, не блокирует загрузку пакета:
+  // имя только группирует, уникальность — на уровне версии.
+  it("добавляет версию к имени, созданному спеком", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await seedSpec(app, "hello", "2.10");
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: {
+        filename: "hello-2.10-1.x86_64.rpm",
+        repositories: ["a"],
+        file: "artifact:hello:2.10-1.x86_64",
+      },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { name: string; versions: Array<{ version: string }> };
+    expect(body.name).toBe("hello");
+    expect(body.versions.map((v) => v.version)).toEqual(["2.10-1.x86_64"]);
+  });
+
+  // NM-04/UPD-02 — дубль той же версии с тем же файлом без override — ошибка
+  it("возвращает no_changes при повторной загрузке идентичного файла", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: {
+        filename: "nginx-1.0.0-1.x86_64.rpm",
+        repositories: ["a"],
+        file: "artifact:nginx:1.0.0-1.x86_64",
+      },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "no_changes" });
+  });
+
+  // NM-04 — override перезаписывает существующую версию «втупую»
+  it("перезаписывает версию по override=true при совпадении имени и версии", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
+    const res = await json(app, "/api/packages", {
+      method: "POST",
+      body: {
+        filename: "nginx-1.0.0-1.x86_64.rpm",
+        repositories: ["a"],
+        file: "rewritten",
+        override: true,
+      },
+    });
+    expect(res.status).toBe(200);
+    const listed = (await (await json(app, "/api/packages/nginx")).json()) as {
+      versions: Array<{ version: string; sha256: string }>;
+    };
+    expect(listed.versions).toHaveLength(1);
+    expect(listed.versions[0]?.sha256).not.toBe("");
+  });
+
+  // NM-04 — override в добавлении версии к существующему имени
+  it("перезаписывает версию через POST /:name/versions?override=true", async () => {
+    const { app } = makeApp();
+    await createRepo(app);
+    await seedPackage(app, "nginx", "1.0.0-1.x86_64");
+    const dup = await json(app, "/api/packages/nginx/versions", {
+      method: "POST",
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", file: "other" },
+    });
+    expect(dup.status).toBe(409);
+    const res = await json(app, "/api/packages/nginx/versions?override=true", {
+      method: "POST",
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", file: "other" },
+    });
+    expect(res.status).toBe(200);
   });
 
   // PKG-01 — обращение к несуществующему пакету — ошибка

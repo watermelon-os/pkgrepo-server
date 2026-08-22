@@ -146,6 +146,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
+    // override принимаем и в теле (JSON), и в query — для единообразия с бинарной загрузкой.
+    if (body.override === undefined) body.override = queryBool(c.req.query("override"));
     if (file === undefined) {
       // Фантомов больше нет: имя создается только загрузкой файла.
       return c.json({ error: "file_required" }, 400);
@@ -271,6 +273,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     } catch {
       return c.json({ error: "invalid_request" }, 400);
     }
+    // override принимаем и в теле (JSON), и в query — для единообразия с бинарной загрузкой.
+    if (body.override === undefined) body.override = queryBool(c.req.query("override"));
     if (file === undefined) {
       // Версия появляется только из файла-артефакта.
       return c.json({ error: "file_required" }, 400);
