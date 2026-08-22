@@ -10,12 +10,6 @@ function rpmRepo(): string {
   return dir;
 }
 
-function debRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "wm-test-"));
-  writeFileSync(join(dir, "Packages"), "");
-  return dir;
-}
-
 function emptyDir(): string {
   return mkdtempSync(join(tmpdir(), "wm-test-"));
 }
@@ -83,7 +77,7 @@ describe("repositories", () => {
     });
     await json(app, "/api/repos", {
       method: "POST",
-      body: { name: "stable", path: debRepo(), type: "deb" },
+      body: { name: "stable", path: rpmRepo(), type: "rpm" },
     });
     const res = await json(app, "/api/repos");
     const body = (await res.json()) as { repositories: Array<{ name: string }> };
@@ -146,15 +140,14 @@ describe("repositories under REPO_ROOT: авто-создание и иници�
     expect(existsSync(join(root, "rpm", "bla", "repodata"))).toBe(true);
   });
 
-  it("создаёт deb-маркер Packages по вложенному относительному пути", async () => {
+  it("отклоняет тип, отличный от rpm", async () => {
     const root = repoRoot();
     const { app } = makeApp({ fsRoot: root });
     const res = await json(app, "/api/repos", {
       method: "POST",
       body: { name: "stag", path: "staging/2026/08", type: "deb" },
     });
-    expect(res.status).toBe(201);
-    expect(existsSync(join(root, "staging", "2026", "08", "Packages"))).toBe(true);
+    expect(res.status).toBe(400);
   });
 
   it("инициализирует существующий каталог без маркеров", async () => {
@@ -200,7 +193,7 @@ describe("repositories under REPO_ROOT: авто-создание и иници�
     const { app } = makeApp({ fsRoot: root });
     const res = await json(app, "/api/repos", {
       method: "POST",
-      body: { name: "esc", path: "sub/../../..", type: "deb" },
+      body: { name: "esc", path: "sub/../../..", type: "rpm" },
     });
     expect(res.status).toBe(400);
   });

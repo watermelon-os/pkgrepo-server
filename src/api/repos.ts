@@ -20,7 +20,8 @@ export interface ReposApiDeps {
 const createdBodySchema = z.object({
   name: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._+~-]+$/),
   path: z.string().min(1),
-  type: z.enum(["rpm", "deb"]),
+  // Поддерживается только rpm.
+  type: z.enum(["rpm"]),
 });
 
 /**

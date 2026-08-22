@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   artifactFileName,
@@ -55,30 +55,6 @@ interface PackageInspector {
   parse: (stdout: string) => ParsedArtifact | undefined;
 }
 
-/** Первое вхождение ключа (для архивов с несколькими PKGBUILD). */
-function firstWins(
-  lines: string[],
-  parseLine: (line: string) => [string, string] | undefined,
-): Record<string, string> {
-  const fields: Record<string, string> = {};
-  for (const line of lines) {
-    const pair = parseLine(line);
-    if (pair && fields[pair[0]] === undefined) fields[pair[0]] = pair[1];
-  }
-  return fields;
-}
-
-function parseKeyEquals(line: string): [string, string] | undefined {
-  const match = /^([A-Za-z0-9_]+)\s*=\s*(.+)$/.exec(line.trim());
-  if (!match) return undefined;
-  const value = match[2]!.trim();
-  if (value.startsWith("(")) {
-    const quoted = /['"]([^'"]*)['"]/.exec(value);
-    return [match[1]!, quoted ? quoted[1]! : ""];
-  }
-  return [match[1]!, value.replace(/['"]/g, "").trim()];
-}
-
 /** Разбор вывода утилиты в имя и версию (архитектура/релиз — часть версии). */
 function parseRpm(stdout: string): ParsedArtifact | undefined {
   const [name, version] = stdout.trim().split("\n").map((s) => s.trim());
@@ -86,51 +62,7 @@ function parseRpm(stdout: string): ParsedArtifact | undefined {
   return { name, version };
 }
 
-function parseDeb(stdout: string): ParsedArtifact | undefined {
-  const [name, versionPart, arch] = stdout.trim().split("\n").map((s) => s.trim());
-  if (!name || !versionPart || !arch) return undefined;
-  return { name, version: `${versionPart}_${arch}` };
-}
-
-/** deb через `dpkg --info`: блок `Package:`/`Version:`/`Architecture:`. */
-function parseDpkgInfo(stdout: string): ParsedArtifact | undefined {
-  const fields: Record<string, string> = {};
-  for (const line of stdout.split("\n")) {
-    const match = /^(Package|Version|Architecture):\s*(.+)$/.exec(line.trim());
-    if (match && fields[match[1]!] === undefined) fields[match[1]!] = match[2]!.trim();
-  }
-  const name = fields.Package;
-  const versionPart = fields.Version;
-  const arch = fields.Architecture;
-  if (!name || !versionPart || !arch) return undefined;
-  return { name, version: `${versionPart}_${arch}` };
-}
-
-/** Собранный pacman-пакет: `.PKGINFO` (pkgname/pkgver/arch). */
-function parsePkgInfo(stdout: string): ParsedArtifact | undefined {
-  const fields = firstWins(stdout.trim().split("\n"), (line) => {
-    const match = /^([A-Za-z0-9_]+)\s*=\s*(.+)$/.exec(line.trim());
-    return match ? [match[1]!, match[2]!.trim()] : undefined;
-  });
-  const name = fields.pkgname;
-  const pkgver = fields.pkgver;
-  const arch = fields.arch;
-  if (!name || !pkgver || !arch) return undefined;
-  return { name, version: `${pkgver}-${arch}` };
-}
-
-/** Исходный архив pacman: `PKGBUILD` (pkgname/pkgver/pkgrel/arch). */
-function parsePkgbuild(stdout: string): ParsedArtifact | undefined {
-  const fields = firstWins(stdout.trim().split("\n"), parseKeyEquals);
-  const name = fields.pkgname;
-  const pkgver = fields.pkgver;
-  const pkgrel = fields.pkgrel;
-  const arch = fields.arch;
-  if (!name || !pkgver || !pkgrel || !arch) return undefined;
-  return { name, version: `${pkgver}-${pkgrel}-${arch}` };
-}
-
-/** Кандидаты-утилиты для типа репозитория (порядок: попытка по очереди). */
+/** Кандидаты-утилиты для типа репозитория. */
 function inspectorsFor(type: string, filePath: string): PackageInspector[] | undefined {
   switch (type) {
     case "rpm":
@@ -138,28 +70,6 @@ function inspectorsFor(type: string, filePath: string): PackageInspector[] | und
         {
           command: ["rpm", "-qp", "--qf", "%{NAME}\n%{VERSION}-%{RELEASE}.%{ARCH}", filePath],
           parse: parseRpm,
-        },
-      ];
-    case "deb":
-      return [
-        {
-          command: ["dpkg-deb", "-f", filePath, "Package", "Version", "Architecture"],
-          parse: parseDeb,
-        },
-        {
-          command: ["dpkg", "--info", filePath],
-          parse: parseDpkgInfo,
-        },
-      ];
-    case "pacman":
-      return [
-        {
-          command: ["tar", "-xOf", filePath, ".PKGINFO"],
-          parse: parsePkgInfo,
-        },
-        {
-          command: ["tar", "-xOf", filePath, "--wildcards", "*/PKGBUILD"],
-          parse: parsePkgbuild,
         },
       ];
     default:
@@ -221,9 +131,6 @@ export function isRepoInitialized(dir: string, type: string): boolean {
     if (type === "rpm") {
       return statSync(join(dir, "repodata")).isDirectory();
     }
-    if (type === "deb") {
-      return existsSync(join(dir, "Packages")) || existsSync(join(dir, "Release"));
-    }
     return false;
   } catch {
     return false;
@@ -232,19 +139,13 @@ export function isRepoInitialized(dir: string, type: string): boolean {
 
 /**
  * Инициализация репозитория: создание каталога и маркеров формата.
- * Индекс (repodata/repomd.xml, Packages) перестраивается при добавлении
- * артефактов через adapter.update.
+ * Индекс (repodata/repomd.xml) перестраивается при добавлении артефактов
+ * через adapter.update.
  */
 export async function initRepo(dir: string, type: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   if (type === "rpm") {
     await mkdir(join(dir, "repodata"), { recursive: true });
-  } else if (type === "deb") {
-    const packages = join(dir, "Packages");
-    const release = join(dir, "Release");
-    if (!existsSync(packages) && !existsSync(release)) {
-      await writeFile(packages, "");
-    }
   }
 }
 
@@ -254,43 +155,15 @@ function generatorCommandsFor(
   type: string,
   name: string,
   version: string | undefined,
-): Array<{ command: string[]; collect?: "Packages" }> {
+): Array<{ command: string[] }> {
   switch (type) {
     case "rpm":
+      void name;
+      void version;
       return [{ command: ["createrepo_c", dir] }, { command: ["createrepo", dir] }];
-    case "deb":
-      // dpkg-scanpackages печатает индекс в stdout — пишем его в Packages.
-      return [{ command: ["dpkg-scanpackages", dir, "/dev/null"], collect: "Packages" }];
-    case "pacman": {
-      // repo-add требует путь к базе репо; имя базы неизвестно адаптеру —
-      // берём существующий `*.db.tar.gz` в директории репозитория.
-      const db = findPacmanDb(dir);
-      if (!db) return [];
-      const pkgFile = version
-        ? join(dir, artifactFileName(name, version, defaultArtifactTemplates[type] ?? defaultArtifactTemplates.rpm!))
-        : undefined;
-      return [
-        {
-          command: pkgFile
-            ? ["repo-add", join(dir, db), pkgFile]
-            : ["repo-add", join(dir, db)],
-        },
-      ];
-    }
     default:
       return [];
   }
-}
-
-function findPacmanDb(dir: string): string | undefined {
-  try {
-    for (const entry of readdirSync(dir)) {
-      if (entry.endsWith(".db.tar.gz")) return entry;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }
 
 /** Запуск генератора бд репозитория; отсутствующая утилита — варнинг и следующая попытка. */
@@ -308,7 +181,7 @@ async function updateRepoDb(
   }
   const exec = options.exec ?? defaultExec;
   let warned = false;
-  for (const { command, collect } of commands) {
+  for (const { command } of commands) {
     const [tool, ...args] = command;
     let result: ExecResult;
     try {
@@ -326,9 +199,6 @@ async function updateRepoDb(
       continue;
     }
     if (result.code !== 0) continue;
-    if (collect === "Packages") {
-      await writeFile(join(dir, "Packages"), result.stdout);
-    }
     options.logger?.debug("repo update done", { type, tool, dir, name, version });
     return;
   }

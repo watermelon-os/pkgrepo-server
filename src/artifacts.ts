@@ -21,8 +21,6 @@ export interface ParsedArtifact {
 
 export const defaultArtifactTemplates: Record<string, ArtifactTemplate> = {
   rpm: { type: "rpm", extension: ".rpm", nameSeparator: "-" },
-  deb: { type: "deb", extension: ".deb", nameSeparator: "_" },
-  pacman: { type: "pacman", extension: ".pkg.tar.zst", nameSeparator: "-" },
 };
 
 const packagePart = /^[a-zA-Z0-9._+~-]+$/;
@@ -32,13 +30,9 @@ function validPart(value: string): boolean {
 }
 
 /**
- * rpm/pacman: имя-версия-релиз.архитектура — версией становится
- * `version-release.arch` (rpm) или `version-release-arch` (pacman).
+ * rpm: имя-версия-релиз.архитектура — версией становится `version-release.arch`.
  */
-function parseHyphenDotted(
-  base: string,
-  archSeparator: string,
-): ParsedArtifact | undefined {
+function parseHyphenDotted(base: string): ParsedArtifact | undefined {
   const dot = base.lastIndexOf(".");
   if (dot <= 0) return undefined;
   const arch = base.slice(dot + 1);
@@ -51,25 +45,8 @@ function parseHyphenDotted(
   if (dash2 <= 0) return undefined;
   const versionPart = rest2.slice(dash2 + 1);
   const name = rest2.slice(0, dash2);
-  const version = `${versionPart}-${release}${archSeparator}${arch}`;
+  const version = `${versionPart}-${release}.${arch}`;
   if (!validPart(name) || !validPart(version) || !validPart(versionPart) || !validPart(release) || !validPart(arch)) {
-    return undefined;
-  }
-  return { name, version };
-}
-
-/** deb: имя_версия_архитектура — версией становится `version_arch`. */
-function parseUnderscored(base: string): ParsedArtifact | undefined {
-  const us = base.lastIndexOf("_");
-  if (us <= 0) return undefined;
-  const arch = base.slice(us + 1);
-  const rest = base.slice(0, us);
-  const us2 = rest.lastIndexOf("_");
-  if (us2 <= 0) return undefined;
-  const versionPart = rest.slice(us2 + 1);
-  const name = rest.slice(0, us2);
-  const version = `${versionPart}_${arch}`;
-  if (!validPart(name) || !validPart(version) || !validPart(versionPart) || !validPart(arch)) {
     return undefined;
   }
   return { name, version };
@@ -84,11 +61,7 @@ export function parseArtifactName(
   const base = fileName.slice(0, -template.extension.length);
   switch (template.type) {
     case "rpm":
-      return parseHyphenDotted(base, ".");
-    case "pacman":
-      return parseHyphenDotted(base, "-");
-    case "deb":
-      return parseUnderscored(base);
+      return parseHyphenDotted(base);
     default:
       return undefined;
   }

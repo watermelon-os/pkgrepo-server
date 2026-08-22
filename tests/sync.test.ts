@@ -92,22 +92,18 @@ describe("synchronization with fs", () => {
     expect(res.status).toBe(200);
   });
 
-  // Каталог индекса (repodata) и индексные файлы (Packages/Release) — не артефакты.
+  // Каталог индекса (repodata) и не-.rpm файлы — не артефакты.
   it("пропускает индекс репозитория и не шумит в лог", async () => {
     const rpmDir = rpmRepo();
-    const debDir = mkdtempSync(join(tmpdir(), "wm-test-"));
-    writeFileSync(join(debDir, "Packages"), "Package: whatever\n");
-    writeFileSync(join(debDir, "Release"), "Origin: test\n");
+    // Индексный файл без расширения .rpm и чужой артефакт в корне репозитория.
+    writeFileSync(join(rpmDir, "repomd.xml"), "<metadata/>");
+    writeFileSync(join(rpmDir, "README.txt"), "not a package");
 
     const { logger, lines } = memoryLogger();
     const { app } = makeApp({ logger });
     await json(app, "/api/repos", {
       method: "POST",
       body: { name: "r", path: rpmDir, type: "rpm" },
-    });
-    await json(app, "/api/repos", {
-      method: "POST",
-      body: { name: "d", path: debDir, type: "deb" },
     });
 
     const res = await json(app, "/api/packages/sync", { method: "POST" });
