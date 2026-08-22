@@ -108,15 +108,47 @@ export async function seedPackage(
   repo = "a",
 ): Promise<void> {
   const file = `artifact:${name}:${version}`;
+  // Имя пакета в запросе не задается: разбирается из имени файла (NM-06).
+  const filename = `${name}-${version}.rpm`;
   const res = await json(app, "/api/packages", {
     method: "POST",
-    body: { name, version, repositories: [repo], file },
+    body: { filename, repositories: [repo], file },
   });
   if (res.status === 201) return;
   if (res.status !== 409) throw new Error(`seedPackage failed: ${res.status}`);
   const add = await json(app, `/api/packages/${name}/versions`, {
     method: "POST",
-    body: { version, file },
+    body: { filename, file },
   });
   if (add.status !== 201) throw new Error(`seedPackage (add version) failed: ${add.status}`);
+}
+
+/** Текст спека с тегами Name/Version/Release. */
+export function makeSpecText(name: string, version: string, release = "1"): string {
+  return [
+    `Name:           ${name}`,
+    `Version:        ${version}`,
+    `Release:        ${release}`,
+    "Summary:        Test spec",
+    "",
+    "%description",
+    "Test spec body",
+    "",
+  ].join("\n");
+}
+
+/** Загружает спек (создает имя при необходимости). Имя разбирается из содержимого. */
+export async function seedSpec(
+  app: ReturnType<typeof makeApp>["app"],
+  name: string,
+  version = "1.0.0",
+  release = "1",
+): Promise<void> {
+  const res = await json(app, "/api/specs", {
+    method: "POST",
+    body: { file: makeSpecText(name, version, release) },
+  });
+  if (res.status !== 201 && res.status !== 200) {
+    throw new Error(`seedSpec failed: ${res.status}`);
+  }
 }

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2a3652bb-70c0-4ec6-9b17-31c6a94f0f25",
+  "id": "3a2ad169-a6c2-410f-90fb-6274688bed8d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "packages": {
@@ -74,6 +74,81 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "specs": {
+      "name": "specs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "specs_name_version_uq": {
+          "name": "specs_name_version_uq",
+          "columns": [
+            "name",
+            "version"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "specs_name_packages_name_fk": {
+          "name": "specs_name_packages_name_fk",
+          "tableFrom": "specs",
+          "tableTo": "packages",
+          "columnsFrom": [
+            "name"
+          ],
+          "columnsTo": [
+            "name"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "versions": {
       "name": "versions",
       "columns": {
@@ -98,6 +173,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "spec_id": {
+          "name": "spec_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -119,6 +201,19 @@
             "name"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "versions_spec_id_specs_id_fk": {
+          "name": "versions_spec_id_specs_id_fk",
+          "tableFrom": "versions",
+          "tableTo": "specs",
+          "columnsFrom": [
+            "spec_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

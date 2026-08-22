@@ -38,7 +38,7 @@ describe("search API", () => {
     await seedPackage(app, "nginx", "1.0.0-1.x86_64");
     const res2 = await json(app, "/api/packages/nginx/versions", {
       method: "POST",
-      body: { version: "2.0.0-1.x86_64", file: "artifact:nginx:2" },
+      body: { filename: "nginx-2.0.0-1.x86_64.rpm", file: "artifact:nginx:2" },
     });
     expect(res2.status).toBe(201);
 

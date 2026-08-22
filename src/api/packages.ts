@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { Hono, type Context } from "hono";
-import { packages, repositories, versions } from "../db/schema.js";
+import { packages, repositories, specs, versions } from "../db/schema.js";
 import { createLogger } from "../logger.js";
 import type { PackageApiDeps } from "./packages/deps.js";
 import { resolveAdapter } from "./packages/deps.js";
@@ -21,12 +21,11 @@ import {
   ArtifactError,
   artifactFileName,
   getPackage,
-  isArtifactError,
+  parseUpload,
   removeArtifactFromRepos,
   repositoryByIdentity,
   reposOf,
   sha256,
-  writeArtifactToRepos,
   writeFileToRepos,
 } from "./packages/artifacts.js";
 import { buildPackageResponse } from "./packages/response.js";
@@ -59,6 +58,21 @@ function artifactErrorResponse(c: Context, error: ArtifactError) {
       : { error: error.code },
     400,
   );
+}
+
+/** Привязка артефакта к спеку: спек должен существовать у имени. */
+function resolveSpecId(
+  db: PackageApiDeps["db"],
+  name: string,
+  specVersion: string | undefined,
+): number | undefined | "not_found" {
+  if (specVersion === undefined) return undefined;
+  const spec = db
+    .select()
+    .from(specs)
+    .where(and(eq(specs.name, name), eq(specs.version, specVersion)))
+    .get();
+  return spec ? spec.id : "not_found";
 }
 
 export function packageRoutes(deps: PackageApiDeps): Hono {
@@ -103,7 +117,8 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     });
   });
 
-  // ADD-01. Создание пакета сразу с первой версией (файл обязателен, фантомов нет).
+  // ADD-01/NM-02. Создание имени загрузкой пакета: имя и версия разбираются
+  // из самого артефакта (утилита → парсер имени файла), в запросе не задаются.
   app.post("/", async (c) => {
     const reqId = c.get("reqId");
     let body: z.infer<typeof createBodySchema>;
@@ -113,13 +128,13 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         body = createBodySchema.parse(await c.req.json());
         if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
       } else {
-        // PRS-07: файл — бинарное тело запроса; метаданные — в query.
+        // PRS-06: файл — бинарное тело запроса; метаданные — в query.
         const bytes = await c.req.arrayBuffer();
         file = bytes.byteLength > 0 ? new Uint8Array(bytes) : undefined;
         body = createBodySchema.parse({
-          name: c.req.query("name") ?? "",
-          version: c.req.query("version") ?? undefined,
+          filename: c.req.query("filename") ?? undefined,
           repositories: queryRepositories(c.req.query("repositories")),
+          specVersion: c.req.query("specVersion") ?? undefined,
         });
       }
     } catch {
@@ -128,10 +143,6 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (file === undefined) {
       // Фантомов больше нет: имя создается только загрузкой файла.
       return c.json({ error: "file_required" }, 400);
-    }
-    const existing = getPackage(db, body.name);
-    if (existing) {
-      return c.json({ error: "package_exists" }, 409);
     }
     // MOV-06: размещение обязательно при добавлении файла.
     if (!body.repositories || body.repositories.length === 0) {
@@ -143,32 +154,36 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         return c.json({ error: "repository_not_found", repository: repoName }, 400);
       }
     }
+    // Разбор до записи в фс и бд (Атомарность): ошибка не оставляет следов.
+    const derived = await parseUpload(adapter, file, body.filename);
+    if (!derived) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_unparseable"));
+    }
+    if (getPackage(db, derived.name)) {
+      return c.json({ error: "package_exists" }, 409);
+    }
+    const specId = resolveSpecId(db, derived.name, body.specVersion);
+    if (specId === "not_found") {
+      return c.json({ error: "spec_not_found", specVersion: body.specVersion }, 400);
+    }
     const now = new Date();
     db.insert(packages)
       .values({
-        name: body.name,
+        name: derived.name,
         repositories: body.repositories ?? [],
         createdAt: now,
       })
       .run();
 
-    const pkg = getPackage(db, body.name)!;
-    let derived;
-    try {
-      // Первая загрузка имени: версия берется из метаданных файла.
-      derived = await writeArtifactToRepos(db, pkg, body.name, body.version ?? "", file, adapter, {
-        deriveVersion: true,
-      });
-    } catch (error) {
-      if (isArtifactError(error)) return artifactErrorResponse(c, error);
-      throw error;
-    }
+    const pkg = getPackage(db, derived.name)!;
+    await writeFileToRepos(db, pkg, derived.name, derived.version, file, adapter);
     try {
       db.insert(versions)
         .values({
           packageName: derived.name,
           version: derived.version,
           sha256: sha256(file),
+          specId,
           createdAt: now,
         })
         .run();
@@ -178,11 +193,12 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       throw error;
     }
 
-    logger.info("package created", { req_id: reqId, name: body.name });
+    logger.info("package created", { req_id: reqId, name: derived.name });
     return c.json(buildPackageResponse(deps, pkg), 201);
   });
 
-  // Добавление версии к существующему имени.
+  // Добавление версии к существующему имени (имя адресуется путем, версия
+  // разбирается из файла).
   app.post("/:name/versions", async (c) => {
     const name = c.req.param("name");
     if (!nameSchema.safeParse(name).success) return c.json({ error: "invalid_request" }, 400);
@@ -193,11 +209,12 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         body = versionBodySchema.parse(await c.req.json());
         if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
       } else {
-        // PRS-07: файл — бинарное тело запроса; версия — в query.
+        // PRS-06: файл — бинарное тело запроса; параметры — в query.
         const bytes = await c.req.arrayBuffer();
         file = bytes.byteLength > 0 ? new Uint8Array(bytes) : undefined;
         body = versionBodySchema.parse({
-          version: c.req.query("version") ?? "",
+          filename: c.req.query("filename") ?? undefined,
+          specVersion: c.req.query("specVersion") ?? undefined,
         });
       }
     } catch {
@@ -213,26 +230,32 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
       // MOV-06: файлу негде жить.
       return c.json({ error: "no_repositories" }, 400);
     }
+    const derived = await parseUpload(adapter, file, body.filename);
+    if (!derived) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_unparseable"));
+    }
+    if (derived.name !== name) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_name_mismatch", derived));
+    }
     const dup = db
       .select()
       .from(versions)
-      .where(and(eq(versions.packageName, name), eq(versions.version, body.version)))
+      .where(and(eq(versions.packageName, name), eq(versions.version, derived.version)))
       .get();
     if (dup) return c.json({ error: "version_exists" }, 409);
 
-    const now = new Date();
-    let derived;
-    try {
-      derived = await writeArtifactToRepos(db, pkg, name, body.version, file, adapter);
-    } catch (error) {
-      if (isArtifactError(error)) return artifactErrorResponse(c, error);
-      throw error;
+    const specId = resolveSpecId(db, name, body.specVersion);
+    if (specId === "not_found") {
+      return c.json({ error: "spec_not_found", specVersion: body.specVersion }, 400);
     }
+    const now = new Date();
+    await writeFileToRepos(db, pkg, name, derived.version, file, adapter);
     db.insert(versions)
       .values({
-        packageName: derived.name,
+        packageName: name,
         version: derived.version,
         sha256: sha256(file),
+        specId,
         createdAt: now,
       })
       .run();
@@ -245,6 +268,25 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     const pkg = getPackage(db, name);
     if (!pkg) return c.json({ error: "not_found" }, 404);
     return c.json(buildPackageResponse(deps, pkg));
+  });
+
+  // Спек, которым собран артефакт (по имени, версии и релизу внутри version-строки).
+  app.get("/:name/versions/:version/spec", (c) => {
+    const name = c.req.param("name");
+    const version = c.req.param("version");
+    const row = db
+      .select({ spec: specs })
+      .from(versions)
+      .innerJoin(specs, eq(versions.specId, specs.id))
+      .where(and(eq(versions.packageName, name), eq(versions.version, version)))
+      .get();
+    if (!row) return c.json({ error: "not_found" }, 404);
+    c.header("content-type", "text/plain; charset=utf-8");
+    c.header(
+      "content-disposition",
+      `attachment; filename="${name}-${row.spec.version}.spec"`,
+    );
+    return c.body(row.spec.content);
   });
 
   // MOV-01..06. Размещение в репозиториях.
@@ -327,10 +369,12 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
         body = versionUpdateBodySchema.parse(await c.req.json());
         if (body.file !== undefined) file = Buffer.from(body.file, "utf8");
       } else {
-        // PRS-07: файл — бинарное тело запроса.
+        // PRS-06: файл — бинарное тело запроса; параметры — в query.
         const bytes = await c.req.arrayBuffer();
         file = bytes.byteLength > 0 ? new Uint8Array(bytes) : undefined;
-        body = versionUpdateBodySchema.parse({});
+        body = versionUpdateBodySchema.parse({
+          filename: c.req.query("filename") ?? undefined,
+        });
       }
     } catch {
       return c.json({ error: "invalid_request" }, 400);
@@ -406,14 +450,19 @@ export function packageRoutes(deps: PackageApiDeps): Hono {
     if (row.sha256 === newHash) {
       return c.json({ error: "no_changes" }, 409);
     }
-    // UPD-01: перезапись при разной хэшсумме — варнинг.
-    // Расхождение версии файла с объявленной — ошибка до записи в фс (PRS-08).
-    try {
-      await writeArtifactToRepos(db, pkg, name, version, file, adapter);
-    } catch (error) {
-      if (isArtifactError(error)) return artifactErrorResponse(c, error);
-      throw error;
+    // UPD-01: перезапись при разной хэшсумме — варнинг. Имя/версия файла
+    // обязаны совпасть с адресом (PRS-07): расхождение — ошибка до записи в фс.
+    const derived = await parseUpload(adapter, file, body.filename);
+    if (!derived) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_unparseable"));
     }
+    if (derived.name !== name) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_name_mismatch", derived));
+    }
+    if (derived.version !== version) {
+      return artifactErrorResponse(c, new ArtifactError("artifact_version_mismatch", derived));
+    }
+    await writeFileToRepos(db, pkg, name, version, file, adapter);
     db.update(versions)
       .set({ sha256: newHash })
       .where(and(eq(versions.packageName, name), eq(versions.version, version)))

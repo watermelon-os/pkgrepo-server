@@ -113,7 +113,7 @@ describe("repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["main"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["main"], file: "content" },
     });
 
     const del = await json(app, "/api/repos/main", { method: "DELETE" });
@@ -209,7 +209,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["a"], file: "content" },
     });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
@@ -227,7 +227,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["a"], file: "content" },
     });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
@@ -249,7 +249,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["a"], file: "content" },
     });
     const res = await json(app, "/api/packages/nginx", {
       method: "PATCH",
@@ -276,7 +276,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a", "b"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["a", "b"], file: "content" },
     });
 
     expect(existsSync(join(pathA, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
@@ -302,7 +302,7 @@ describe("placement between repositories", () => {
     });
     await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0-1.x86_64", repositories: ["a"], file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: ["a"], file: "content" },
     });
     expect(updates).toContain("nginx");
   });
@@ -312,7 +312,7 @@ describe("placement between repositories", () => {
     const { app } = makeApp();
     const res = await json(app, "/api/packages", {
       method: "POST",
-      body: { name: "nginx", version: "1.0.0", file: "content" },
+      body: { filename: "nginx-1.0.0-1.x86_64.rpm", repositories: [], file: "content" },
     });
     expect(res.status).toBe(400);
   });

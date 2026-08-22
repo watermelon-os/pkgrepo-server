@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
 import {
@@ -105,46 +105,26 @@ export async function writeFileToRepos(
 }
 
 /**
- * Размещение артефакта через API: контент записывается во временный файл,
- * имя и версия определяются той же цепочкой утилит, что и в синке (фолбэк —
- * только проверка шаблона составленного имени, не слепое согласие с телом).
- * Расхождение фактического имени/версии с объявленными — всегда ошибка.
- * deriveVersion: версия берется из метаданных файла (первая загрузка имени);
- * иначе расхождение версии — ошибка до записи в фс.
+ * Разбор загружаемого файла той же цепочкой, что и в синке: утилита пакетной
+ * системы по содержимому, фолбэк — парсер имени файла по шаблону.
+ * filename — имя загружаемого файла (нужно фолбэк-парсеру; это имя ФАЙЛА,
+ * а не пакета). undefined — файл не разобран.
  */
-export async function writeArtifactToRepos(
-  db: DatabaseClient,
-  pkg: { repositories: string[] },
-  name: string,
-  version: string,
-  content: Uint8Array,
+export async function parseUpload(
   adapter: RepoAdapter,
-  options: { deriveVersion?: boolean } = {},
-): Promise<ParsedArtifact> {
-  const repo = reposOf(db, pkg)[0];
-  if (!repo) throw new ArtifactError("no_repositories");
-  // Временный файл называется артефактным именем — для разбора той же цепочкой
-  // (фолбэк-парсер работает по базовому имени); уникальность — через директорию.
+  content: Uint8Array,
+  filename?: string,
+): Promise<ParsedArtifact | undefined> {
   const probeDir = join(tmpdir(), `.wm-probe-${process.pid}-${Date.now()}`);
   await mkdir(probeDir, { recursive: true });
-  const probe = join(probeDir, artifactFileName(name, version, repo.type));
+  const base = filename && filename.length > 0 ? basename(filename) : "package.rpm";
+  const probe = join(probeDir, base);
   await writeFile(probe, content);
-  let parsed: ParsedArtifact | undefined;
   try {
-    parsed = await adapter.inspect(repo.type, probe);
+    return await adapter.inspect("rpm", probe);
   } finally {
     await rm(probeDir, { recursive: true, force: true });
   }
-  if (!parsed) throw new ArtifactError("artifact_unparseable");
-  // Проверки до записи в фс (Атомарность): ошибка не оставляет файлов.
-  if (parsed.name !== name) {
-    throw new ArtifactError("artifact_name_mismatch", parsed);
-  }
-  if (!options.deriveVersion && parsed.version !== version) {
-    throw new ArtifactError("artifact_version_mismatch", parsed);
-  }
-  await writeFileToRepos(db, pkg, parsed.name, parsed.version, content, adapter);
-  return parsed;
 }
 
 export async function removeArtifactFromRepos(
