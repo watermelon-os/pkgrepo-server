@@ -1,7 +1,7 @@
 %global srvdir /srv
 
 Name: pkgrepo-server
-Version: 0.1
+Version: 0.1.1
 Release: 1
 Summary: HTTP-сервер управления репозиториями системных пакетных менеджеров
 License: MIT
