@@ -13,7 +13,42 @@ BUILD_DIR = dist
 # тоже в cwd (server не компилируется, bin/dist уже готовы). $(wildcard) берёт то, что есть.
 LIC := $(or $(wildcard LICENSE),LICENSE)
 
-include ../common/fhs.mk
+# Блок GNU-переменных установки (стандарт autoconf/GNU make, они же — соглашения FHS).
+# Мотивация: пользователь/сборщик пакета может переопределить любую из них стандартным
+# способом (make install prefix=/usr), не читая Makefile. Иерархия производных друг от
+# друга (exec_prefix<-prefix, bindir<-exec_prefix, ...) повторяет общепринятую схему.
+# ВАЖНО: комментарии пишем только на отдельных строках — inline-комментарий после значения
+# make вырезает, но оставляет пробелы перед ним, и пути ломаются («/usr/local   /bin»).
+# prefix — корень установки по умолчанию.
+prefix      = /usr/local
+# exec_prefix — = prefix, если нет особой раскладки архитектурно-зависимых файлов.
+exec_prefix = $(prefix)
+
+# DESTDIR — здесь не объявляется (это не наша переменная), а передаётся извне.
+# Мотивация: стандартный механизм staging-установки — устанавливать не в корень ФС,
+# а в $DESTDIR<путь>, чтобы потом упаковать в rpm/deb/т.п. без прав root.
+
+# bindir — исполняемые файлы.
+bindir      = $(exec_prefix)/bin
+# datarootdir — архитектурно-независимые данные.
+datarootdir = $(prefix)/share
+# libdir — архитектурно-зависимые библиотеки.
+libdir      = $(exec_prefix)/lib
+# sysconfdir — системные конфигурационные файлы.
+sysconfdir = $(prefix)/etc
+# srvdir — данные, предоставляемые системой по сети.
+srvdir = $(prefix)/srv
+# localstatedir — изменяемые данные системы.
+localstatedir = $(prefix)/var
+# unitdir юниты systemd
+unitdir = $(prefix)/lib/systemd/system
+
+# docdir — документация именно этой утилиты.
+docdir      = $(datarootdir)/doc/$(NAME)
+# licensdir — лицензия (соглашение Fedora: /usr/share/licenses/<name>).
+licensdir   = $(datarootdir)/licenses/$(NAME)
+# node_modulesdir — системный каталог Node.js-пакетов.
+node_modulesdir = $(libdir)/node_modules/$(NAME)
 
 # repodir — репозитории пакетов.
 repodir = $(srvdir)/repo
@@ -24,7 +59,6 @@ release:
 	npm prune --omit=dev
 
 # install не пересобирает (dist уже в tar от make dist): в rpmbuild нет package.json.
-# DESTDIR в переменные fhs.mk не входит — префиксуем правила сами.
 install:
 	mkdir -p $(DESTDIR)$(bindir)
 	ln -s $(node_modulesdir)/bin/$(NAME).js $(DESTDIR)$(bindir)/$(NAME)
@@ -55,13 +89,9 @@ clean:
 DIST_TAR_TMP_DIR = $(shell mktemp -d)
 dist: release
 	mkdir -p $(RPMBUILD_DIR)/{SPECS,SOURCES}
-	# Собрать мейкфайл
-	cat ../common/fhs.mk Makefile > Makefile.tmp
-	sed -i '\|include ../common/fhs.mk|d' Makefile.tmp
 	tar -czf $(RPMBUILD_DIR)/SOURCES/$(NAMEVER).tar.gz \
-		--transform 's|^Makefile.tmp$$|Makefile|' \
 		--transform 's|^|$(NAMEVER)/|' \
-		bin/$(NAME).js $(BUILD_DIR) node_modules drizzle LICENSE Makefile.tmp package.json .env.example $(NAME).service
+		bin/$(NAME).js $(BUILD_DIR) node_modules drizzle LICENSE Makefile package.json .env.example $(NAME).service
 	rm -f Makefile.tmp
 	cp -u $(NAME).spec $(RPMBUILD_DIR)/SPECS/$(NAME).spec
 
