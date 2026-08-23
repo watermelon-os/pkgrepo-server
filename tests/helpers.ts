@@ -6,6 +6,7 @@ import { createApp, type AppDeps } from "../src/app.js";
 import type { DatabaseClient } from "../src/db/index.js";
 import * as schema from "../src/db/schema.js";
 import { createLogger, type Logger, type LogFields, type LogLevel } from "../src/logger.js";
+import type { RepoAdapter } from "../src/repoAdapter.js";
 
 export interface MakeAppOptions {
   db?: DatabaseClient;
@@ -15,6 +16,7 @@ export interface MakeAppOptions {
   fsRoot?: string;
   logEmptySync?: boolean;
   tokens?: Array<{ value: string; comment?: string; role?: string }>;
+  repoAdapter?: RepoAdapter;
 }
 
 export interface TestContext {

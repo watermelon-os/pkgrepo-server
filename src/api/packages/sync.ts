@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -8,6 +8,10 @@ import type { PackageApiDeps } from "./deps.js";
 import { resolveAdapter } from "./deps.js";
 import { artifactFileName, sha256 } from "./artifacts.js";
 import { defaultArtifactTemplates } from "../../artifacts.js";
+
+function errorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Сканирование репозиториев и подхват артефактов, появившихся на диске вне API (SVR-03).
@@ -26,8 +30,13 @@ export async function runSync(
     let entries: Dirent[] = [];
     try {
       entries = await readdir(repo.path, { withFileTypes: true });
-    } catch {
-      logger.warn("sync: cannot read repository", { req_id: reqId, repo: repo.name });
+    } catch (error) {
+      logger.warn("sync: cannot read repository", {
+        req_id: reqId,
+        repo: repo.name,
+        path: repo.path,
+        reason: errorReason(error),
+      });
       continue;
     }
     // Только файлы; каталоги (repodata и т.п.) и файлы чужих расширений —
@@ -68,13 +77,45 @@ export async function runSync(
         .where(and(eq(versions.packageName, name), eq(versions.version, version)))
         .get();
       if (existing) continue; // идемпотентность
-      const target = join(repo.path, artifactFileName(name, version, repo.type));
+      // Читается фактически найденный файл: его имя может отличаться от
+      // канонического (имя файла ≠ name-version-release.arch из метаданных).
+      const canonical = artifactFileName(name, version, repo.type);
       let content: Buffer;
       try {
-        content = await readFile(target);
-      } catch {
-        logger.warn("sync: cannot read artifact", { req_id: reqId, repo: repo.name, file });
+        content = await readFile(join(repo.path, file));
+      } catch (error) {
+        logger.warn("sync: cannot read artifact", {
+          req_id: reqId,
+          repo: repo.name,
+          file,
+          path: join(repo.path, file),
+          reason: errorReason(error),
+        });
         continue;
+      }
+      if (file !== canonical) {
+        try {
+          await rename(join(repo.path, file), join(repo.path, canonical));
+          logger.debug("sync: renamed artifact", {
+            req_id: reqId,
+            repo: repo.name,
+            from: file,
+            to: canonical,
+            name,
+            version,
+          });
+        } catch (error) {
+          logger.warn("sync: cannot rename artifact", {
+            req_id: reqId,
+            repo: repo.name,
+            from: file,
+            to: canonical,
+            name,
+            version,
+            reason: errorReason(error),
+          });
+          continue;
+        }
       }
       db.insert(versions)
         .values({

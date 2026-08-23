@@ -156,6 +156,62 @@ describe("synchronization with fs", () => {
     };
     expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
   });
+
+  // Метаданные пакета (как их видит rpm -qp) могут не совпадать с именем файла
+  // (например omv-сборки: vim-9.2.0920-1-omv2690.x86_64.rpm) — пакет всё равно
+  // подхватывается, файл переименовывается в каноническое имя.
+  it("подхватывает файл с неканоническим именем и переименовывает его", async () => {
+    const path = rpmRepo();
+    const { logger, lines } = memoryLogger();
+    const repoAdapter = {
+      inspect: async () => ({ name: "nginx", version: "1.0.0-1.x86_64" }),
+      update: async () => {},
+    };
+    const { app } = makeApp({ logger, repoAdapter });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    writeFileSync(join(path, "nginx-1.0.0-1-omv2690.x86_64.rpm"), "content");
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { picked: number }).picked).toBe(1);
+
+    const got = await json(app, "/api/packages?name=nginx");
+    const body = (await got.json()) as {
+      packages: Array<{ versions: Array<{ version: string }> }>;
+    };
+    expect(body.packages[0]!.versions.map((v) => v.version)).toContain("1.0.0-1.x86_64");
+
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(path, "nginx-1.0.0-1.x86_64.rpm"))).toBe(true);
+    expect(existsSync(join(path, "nginx-1.0.0-1-omv2690.x86_64.rpm"))).toBe(false);
+    expect(lines.join("\n")).toContain("sync: renamed artifact");
+
+    // Повторный скан идемпотентен после переименования
+    const again = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(((await again.json()) as { picked: number }).picked).toBe(0);
+  });
+
+  // Варнинг о нечитаемом артефакте содержит причину (errno/сообщение ОС)
+  it("логирует причину, если файл-симлинк битый", async () => {
+    const path = rpmRepo();
+    const { logger, lines } = memoryLogger();
+    const { app } = makeApp({ logger });
+    await json(app, "/api/repos", {
+      method: "POST",
+      body: { name: "a", path, type: "rpm" },
+    });
+
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync(join(path, "missing-target.rpm"), join(path, "nginx-1.0.0-1.x86_64.rpm"));
+
+    const res = await json(app, "/api/packages/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(lines.join("\n")).toContain("sync: cannot read artifact");
+    expect(lines.join("\n")).toMatch(/reason.*ENOENT/);
+  });
 });
 
 // SYNC_LOG_EMPTY: скан без найденных пакетов можно не логировать.
