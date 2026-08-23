@@ -1,3 +1,5 @@
+import { APP_NAME } from "./constants.js";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_RANK: Record<LogLevel, number> = {
@@ -108,7 +110,7 @@ function fromInternal(internal: Internal): Logger {
 export function createLogger(options: LoggerOptions): Logger {
   return fromInternal({
     level: options.level,
-    name: options.name ?? "watermelon-server-ts",
+    name: options.name ?? APP_NAME,
     base: {},
     stream: options.stream ?? process.stdout,
     standardFields: options.standardFields,

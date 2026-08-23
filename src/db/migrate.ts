@@ -3,6 +3,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { loadConfig } from "../config.js";
 import { openDb } from "./index.js";
 import { createLogger, type Logger } from "../logger.js";
+import { APP_NAME } from "../constants.js";
 
 // Миграции лежат рядом с кодом (drizzle/ в корне пакета), а не в cwd — cwd
 // сервиса (systemd) может не быть каталогом установки.
@@ -23,7 +24,7 @@ export async function runMigrations(
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const logger = createLogger({ level: config.LOG_LEVEL, name: "watermelon-server-ts" });
+  const logger = createLogger({ level: config.LOG_LEVEL, name: APP_NAME });
   logger.info("applying migrations", { database: config.DATABASE_PATH });
   await runMigrations(config.DATABASE_PATH, undefined, logger);
   logger.info("migrations applied");

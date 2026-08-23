@@ -27,10 +27,10 @@ describe("server configuration", () => {
 
   it("разрешает относительный DATABASE_PATH относительно baseDir", () => {
     const cfg = loadConfig(
-      { DATABASE_PATH: "data/watermelon.db", REPO_ROOT: TEST_REPO_ROOT } as never,
+      { DATABASE_PATH: "data/pkgrepo-server.db", REPO_ROOT: TEST_REPO_ROOT } as never,
       "/tmp",
     );
-    expect(cfg.DATABASE_PATH).toBe("/tmp/data/watermelon.db");
+    expect(cfg.DATABASE_PATH).toBe("/tmp/data/pkgrepo-server.db");
   });
 
   it("разрешает относительный REPO_ROOT относительно baseDir", () => {

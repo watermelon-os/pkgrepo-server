@@ -1,11 +1,11 @@
 {
-  "name": "watermelon-server-ts",
-  "version": "0.1.0",
+  "name": "pkgrepo-server",
+  "version": "0.1",
   "description": "Hono + Drizzle + SQLite skeleton for the Watermelon server (TypeScript edition).",
   "type": "module",
   "private": true,
   "bin": {
-    "watermelon-server": "./bin/watermelon-server.js"
+    "pkgrepo-server": "./bin/pkgrepo-server.js"
   },
   "license": "UNLICENSED",
   "engines": {

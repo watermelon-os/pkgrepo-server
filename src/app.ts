@@ -6,6 +6,7 @@ import { packageRoutes } from "./api/packages.js";
 import { repoRoutes } from "./api/repos.js";
 import type { DatabaseClient } from "./db/index.js";
 import { createLogger, type Logger } from "./logger.js";
+import { APP_NAME } from "./constants.js";
 import type { RepoAdapter } from "./repoAdapter.js";
 import type { Token } from "./types.js";
 
@@ -34,7 +35,7 @@ export function generateRequestId(): string {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
-  const logger = deps.logger ?? createLogger({ level: "info", name: "watermelon-server-ts" });
+  const logger = deps.logger ?? createLogger({ level: "info", name: APP_NAME });
 
   app.use("*", async (c, next) => {
     if (deps.tokens && deps.tokens.length > 0) {

@@ -5,7 +5,7 @@ export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: "./data/watermelon.db",
+    url: "./data/pkgrepo-server.db",
   },
   strict: true,
   verbose: true,

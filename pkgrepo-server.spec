@@ -1,17 +1,13 @@
-%{!?package_release: %global package_release 1}
 %global srvdir /srv
 
-Name: watermelon-server
-# rpmbuld --define "package_version 1.2.3"
-Version: %{package_version}
-Release: %{package_release}
-
-# краткое описание пакета
+Name: pkgrepo-server
+Version: 0.1
+Release: 1
 Summary: HTTP-сервер управления репозиториями системных пакетных менеджеров
 License: MIT
-
-URL: https://github.com/dsaime/linux-tools-edu/tree/master/tools/%{name}
-Source: %{name}-%{version}.tar.gz
+URL: https://github.com/watermelon-os/pkgrepo-server
+Source0: https://github.com/watermelon-os/%{name}/archive/v%{version}.tar.gz
+# Source0: https://github.com/watermelon-os/pkgrepo-server/archive/v0.1.tar.gz
 
 BuildRequires: nodejs24
 BuildRequires: nodejs24-devel
@@ -33,7 +29,7 @@ BuildArch: x86_64
 
 # полное описание пакета
 %description
-watermelon-server это HTTP-сервер (Node.js/Hono) с хранилищем SQLite
+pkgrepo-server это HTTP-сервер (Node.js/Hono) с хранилищем SQLite
 (Drizzle + better-sqlite3). Через REST API он управляет каталогом пакетов
 и репозиториев, регистрирует версии, ставит задания на сборку и тест,
 принимает обратные вызовы от раннеров и хранит логи и артефакты.
@@ -42,7 +38,7 @@ watermelon-server это HTTP-сервер (Node.js/Hono) с хранилище�
 %setup # распаковатать архив в BUILD
 
 %build
-# tar.gz уже с подготовленным bin
+make release
 
 %install
 # %make_install = make install DESTDIR=%{buildroot}. prefix передаём явно,

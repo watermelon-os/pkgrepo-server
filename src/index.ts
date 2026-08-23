@@ -6,6 +6,7 @@ import { loadConfig, loadDotEnv } from "./config.js";
 import { openDb } from "./db/index.js";
 import { runMigrations } from "./db/migrate.js";
 import { createLogger } from "./logger.js";
+import { APP_NAME } from "./constants.js";
 import { createRepoAdapter } from "./repoAdapter.js";
 import { readVersion } from "./version.js";
 
@@ -14,7 +15,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({
     level: config.LOG_LEVEL,
-    name: "watermelon-server-ts",
+    name: APP_NAME,
     standardFields: config.LOG_STANDARD_FIELDS,
   });
 

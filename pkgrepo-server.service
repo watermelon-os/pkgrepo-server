@@ -5,8 +5,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/sysconfig/watermelon-server
-ExecStart=/usr/bin/env watermelon-server 
+EnvironmentFile=/etc/sysconfig/pkgrepo-server
+ExecStart=/usr/bin/env pkgrepo-server
 Restart=on-failure
 
 [Install]
