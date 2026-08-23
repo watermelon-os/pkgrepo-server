@@ -1,6 +1,6 @@
 .PHONY: all install uninstall clean dist rpm release
 
-NAME = watermelon-server
+NAME = pkgrepo-server
 VERSION = 0.1
 NAMEVER = $(NAME)-$(VERSION)
 
